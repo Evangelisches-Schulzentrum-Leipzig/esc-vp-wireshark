@@ -45,7 +45,7 @@ escvpnet.header.im_type           -- Packets containing IM-Type headers
 
 Protocol specification summaries are in [`specs/`](specs/) and reference PDFs in [`docs/`](docs/).
 
-## Disclaimer
+## AI Disclaimer
 
 This dissector plugin was written entirely by AI (GitHub Copilot / Claude). The protocol specification documents in [`specs/`](specs/) were mostly laid out and structured by a human; the detailed content was subsequently expanded and completed with AI assistance.
 
