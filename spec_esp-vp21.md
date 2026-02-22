@@ -1,4 +1,6 @@
 # ESC/VP21 Protocol Specification
+Link: https://download.epson-europe.com/pub/download/3222/epson322269eu.pdf
+Revision: J 2008-09-19
 ## 1. ESC/VP21 Command Formats
 ### 1.1. Set command format
 A set command consists of a command and a parameter.

@@ -1,4 +1,6 @@
 # ESC/VP.net Protocol Specification
+Link: https://ia601808.us.archive.org/8/items/manualzz-id-1050273/1050273.pdf
+Revision: F
 ## 1. Overview
 The ESC/VP.net protocol manages communication between a client (PC) and a server (Projector) over a network. It supports two modes of operation:
 
