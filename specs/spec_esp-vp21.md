@@ -4,7 +4,8 @@ Revision: J 2008-09-19
 ## 1. ESC/VP21 Command Formats
 ### 1.1. Set command format
 A set command consists of a command and a parameter.
-There are two types of parameters. One is fixed such as ON, OFF, or 21.Other is a step parameter such as INC, DEC or INIT.
+There are two types of parameters. One is fixed such as ON, OFF, or 21. Other is a step parameter such as INC, DEC or INIT.
+Each set command needs to be followed by the RETURN key (carriage return, `0x0D`).
 
 INC increments the parameter by one.
 DEC decrements the parameter by one.
@@ -14,9 +15,26 @@ INIT initializes the parameter.
 * VOL INC
 
 ### 1.2. Get command format
-A get command consists of a command and ?
+A get command consists of a command and ?.
+Each get command needs to be followed by the RETURN key (carriage return, `0x0D`).
 #### 1.2.1. Examples 
 * SOURCE?
+
+### 1.3. Response format
+A response has no fixed length and thus no padding.
+A response is sent from the projector to the controller when a get command is received. It is also sent when a set command is received if the command is executed successfully.
+A response consists of a command, an equal sign (`0x3D`), a parameter and a carriage return (`0x0D`). The command and parameter are the same as those of set commands.
+Each response needs to be followed by a colon character (`0x3A`).
+When a response is empty (without a command or parameter), only a colon character is sent.
+#### 1.3.1. Example
+* 0x3A -> : (empty response)
+* 0x53 0x4E 0x4F 0x3D 0x58 0x43 0x42 0x39 0x34 0x38 0x30 0x30 0x38 0x36 0x33 0x0D 0x3A -> SNO=XCB94800863: 
+* 0x4D 0x55 0x54 0x45 0x3D 0x4F 0x46 0x46 0x0D 0x3A -> MUTE=OFF:
+
+### 1.4. Error response format
+The projector returns “ERR” and a return key code (`0x0D`) and a colon (`0x3A`) when it receives invalid commands.
+#### 1.4.1. Example
+* 0x45 0x52 0x52 0x0D 0x3A -> ERR:
 
 ## 2. Commands
 ### 2.1. Get Commands
@@ -38,6 +56,12 @@ A get command consists of a command and ?
 | CCAP? | Closed caption mode | `00`: Off, `11`: CC1, `12`: CC2, `13`: CC3, `14`: CC4, `21`: TEXT1, `22`: TEXT2, `23`: TEXT3, `24`: TEXT4 | Values Model dependent |
 | FLWARNING? | Filter warning state | `ON`: Warning on, `OFF`: Warning off ||
 | FILTER? | Filter time | `0` to `65535` ||
+| ZOOM? | E-Zoom setting | `0` to `255` ||
+| SNO? | Serial number | [String] ||
+| ONTIME? | Operation time in hours | `0` to `65535` ||
+| SIGNAL? | Signal state | `00`: No signal, `01`: Signal detected, `FF`: Unsupported signal ||
+| MENUINFO? | Info Menu | `00`: All data, `01`: Status, `02`: Operation hours, `05`: Event ID ||
+| ERR? | Error code | `00`: No error/Error recovered, `01`: Fan error, `03`: Lamp failure at power on, `04`: High internal temperature error, `06`: Lamp error, `07`: Open Lamp cover door error, `08`: Cinema filter error, `09`: Electric dual-layered capacitor is disconnected , `0A`: Auto iris error, `0B`: Subsystem Error, `0C`: Low air flow error, `0D`: Air filter air flow sensor error, `0E`: Power supply unit error (Ballast) ||
 ### 2.2. Set Commands
 | Command | Description | Values | Remarks |
 |---------|-------------|--------|---------|
@@ -50,7 +74,7 @@ A get command consists of a command and ?
 | CMODE | Color mode | `01`: sRGB, `02`: Normal, `03`: Meeting/Text, `04`: Presentation, `05`: Theater, `06`: Amusement/Living Room/Game, `08`: Dynamic/Sports, `10`: Customized, `11`: Black Board, `14`: Photo | Values Model dependent |
 | LUMINANCE | Brightness level | `00`: High, `01`: Low ||
 | MUTE | A/V Mute control | `ON`: A/V Mute on, `OFF`: A/V Mute off ||
-| FREEZE | Freeze control | `ON`: Freeze on, `OFF`: Freeze off |
+| FREEZE | Freeze control | `ON`: Freeze on, `OFF`: Freeze off ||
 | HREVERSE | Rear projection control | `ON`: rear on, `OFF`: rear off ||
 | VREVERSE | Ceiling projection control | `ON`: ceiling on, `OFF`: ceiling off ||
 | AUDIO | Audio input source | `01`: Audio1, `02`: Audio2, `03`: USB | Values Model dependent |

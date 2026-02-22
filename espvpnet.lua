@@ -119,6 +119,12 @@ local VP21_COMMANDS = {
     PINP        = "Picture in Picture",
     KEY         = "Remote Control Key",
     FLTIME      = "Filter Time Control",
+    ZOOM        = "E-Zoom",
+    SNO         = "Serial Number",
+    ONTIME      = "Operation Hours",
+    SIGNAL      = "Signal State",
+    MENUINFO    = "Info Menu",
+    ERR         = "Error Code",
 }
 
 -- Parameter value lookup tables per command
@@ -195,6 +201,32 @@ local VP21_PARAM_VALUES = {
     },
     FLWARNING = {
         ON = "Warning On", OFF = "Warning Off",
+    },
+    SIGNAL = {
+        ["00"] = "No Signal",
+        ["01"] = "Signal Detected",
+        ["FF"] = "Unsupported Signal",
+    },
+    MENUINFO = {
+        ["00"] = "All Data",
+        ["01"] = "Status",
+        ["02"] = "Operation Hours",
+        ["05"] = "Event ID",
+    },
+    ERR = {
+        ["00"] = "No error / Error recovered",
+        ["01"] = "Fan error",
+        ["03"] = "Lamp failure at power on",
+        ["04"] = "High internal temperature error",
+        ["06"] = "Lamp error",
+        ["07"] = "Open lamp cover door error",
+        ["08"] = "Cinema filter error",
+        ["09"] = "Electric dual-layered capacitor disconnected",
+        ["0A"] = "Auto iris error",
+        ["0B"] = "Subsystem error",
+        ["0C"] = "Low air flow error",
+        ["0D"] = "Air filter air flow sensor error",
+        ["0E"] = "Power supply unit error (Ballast)",
     },
 }
 
@@ -367,7 +399,11 @@ function p_escvpnet.dissector(buffer, pinfo, tree)
 
     -- B. ASCII SESSION DETECTION (ESC/VP21)
     -- After a CONNECT success, the TCP connection carries ESC/VP21 ASCII commands.
-    -- Format: Set="CMD PARAM\r", Get="CMD?\r", Response="CMD=VALUE\r", ACK=":"\r
+    -- Set:      "CMD PARAM\r"          (step: INC/DEC/INIT instead of PARAM)
+    -- Get:      "CMD?\r"
+    -- Response: "CMD=VALUE\r:"         (colon terminates every response, section 1.3)
+    -- Empty:    ":"                    (ACK with no data)
+    -- Error:    "ERR\r:"              (invalid command received, section 1.4)
 
     local content_raw = buffer():string()
     local content_clean = content_raw:gsub("[\r\n]", "")
@@ -382,15 +418,18 @@ function p_escvpnet.dissector(buffer, pinfo, tree)
         return
     end
 
-    -- Error response from projector
-    if content_clean == "ERR" or content_clean:match("^ERR") then
+    -- Query response: "CMD=VALUE" or "CMD=VALUE:" (from projector, src port 3629)
+    -- Responses are terminated with \r: per spec (section 1.3); strip trailing colon.
+    local resp_cmd, resp_val = content_clean:match("^(%u+)%s*=%s*(.-):?$")
+    if resp_val == "" then resp_cmd = nil end  -- guard against bare "CMD:"
+
+    -- Error response from projector: bare "ERR" or "ERR:" (section 1.4)
+    -- Must be checked AFTER response pattern so "ERR=00" is parsed as a response.
+    if not resp_cmd and content_clean:match("^ERR:?$") then
         pinfo.cols.info = "ESC/VP21 ERROR"
         subtree:add(f_vp21_type, buffer(), "Error")
         return
     end
-
-    -- Query response: "CMD=VALUE" or "CMD = VALUE" (from projector, src port 3629)
-    local resp_cmd, resp_val = content_clean:match("^(%u+)%s*=%s*(.+)$")
     if resp_cmd and pinfo.src_port == 3629 and VP21_COMMANDS[resp_cmd] then
         local cmd_desc = VP21_COMMANDS[resp_cmd] or resp_cmd
         local decoded = decode_vp21_param(resp_cmd, resp_val)
