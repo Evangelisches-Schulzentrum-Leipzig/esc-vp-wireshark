@@ -45,6 +45,12 @@ escvpnet.header.im_type           -- Packets containing IM-Type headers
 
 Protocol specification summaries are in [`specs/`](specs/) and reference PDFs in [`docs/`](docs/).
 
+## Disclaimer
+
+This dissector plugin was written entirely by AI (GitHub Copilot / Claude). The protocol specification documents in [`specs/`](specs/) were mostly laid out and structured by a human; the detailed content was subsequently expanded and completed with AI assistance.
+
+Every change to the code and specification has been verified both against the protocol specification and for correct functionality in Wireshark using a real network capture of ESC/VP.net traffic.
+
 ## License
 
 [Open Software License v3.0](LICENSE.txt)
