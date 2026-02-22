@@ -128,6 +128,10 @@ local VP21_COMMANDS = {
     LUMCONST    = "Constant Brightness",
     IMNWPNAME   = "Projector Name (IM)",
     NWPNAME     = "Projector Name",
+    -- Undocumented / vendor-specific
+    PWSTATUS    = "Power Status (extended)",
+    VER         = "Firmware Version",
+    LAMPS       = "Light Source Hours",
 }
 
 -- Parameter value lookup tables per command
@@ -259,6 +263,41 @@ local VP21_MULTI_PARAMS = {
         { label = "Y Position" },
         { label = "Size" },
     },
+    -- PWSTATUS (undocumented): "status flags1 flags2 field4 field5"
+    PWSTATUS = {
+        { label = "Status", values = {
+            ["00"] = "Standby (Network Off)",
+            ["01"] = "Power On",
+            ["02"] = "Warm Up",
+            ["03"] = "Cooling Down",
+            ["04"] = "Standby (Network On)",
+            ["05"] = "Abnormal Standby",
+            ON     = "Power On",
+            OFF    = "Power Off",
+        } },
+        { label = "Flags 1" },
+        { label = "Flags 2" },
+        { label = "Field 4" },
+        { label = "Field 5" },
+    },
+    -- LAMPS (undocumented): "h1_normal h1_eco h2_normal h2_eco"
+    LAMPS = {
+        { label = "Light 1 Normal" },
+        { label = "Light 1 Eco" },
+        { label = "Light 2 Normal" },
+        { label = "Light 2 Eco" },
+    },
+}
+
+-- Custom decoders for commands whose response format cannot be handled by a
+-- simple lookup or the generic multi-part splitter.
+local VP21_CUSTOM_DECODERS = {
+    -- VER response: "<firmware>VER=----VER=----..." (first token is the real version,
+    -- the rest are filler entries for unpopulated firmware slots)
+    VER = function(param)
+        local fw = param:match("^(.-)VER=") or param
+        return "Firmware: " .. fw
+    end,
 }
 
 -- Step parameters (INC/DEC/INIT) apply to these commands
@@ -273,6 +312,11 @@ local function decode_vp21_param(cmd, param)
     -- Check step parameters first (valid for set commands)
     if VP21_STEP_PARAMS[param] then
         return VP21_STEP_PARAMS[param]
+    end
+    -- Custom decoder (commands with non-standard response layout)
+    local custom = VP21_CUSTOM_DECODERS[cmd]
+    if custom then
+        return custom(param)
     end
     -- Generic multi-part parameter decoding (space-separated fields)
     local multi = VP21_MULTI_PARAMS[cmd]

@@ -97,3 +97,12 @@ The Range of step parameters is model dependent.
 | TINT | Set tint |
 | VKEYSTONE | Set vertical keystone value |
 | HKEYSTONE | Set horizontal keystone value |
+
+### 2.4. Unknown / Undocumented Commands
+> **Note:** These commands have been observed in captured traffic but are not documented in the official ESC/VP21 specification. Field meanings are inferred from observed values only and may be incomplete or incorrect.
+
+| Command | Description | Observed Response | Inferred Format | Remarks |
+|---------|-------------|-------------------|-----------------|---------|
+| PWSTATUS? | Power status (extended) | `PWSTATUS=03 00000002 00000000 T1 F1:` | Space-separated: `status flags1 flags2 field4 field5` | Unknown – status byte may overlap with `PWR?` values |
+| VER? | Firmware version | `VER=3X011864JFWWV116VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----:` | First token before repeated `VER=----` fillers is the active firmware version string; remaining slots appear to represent unpopulated firmware banks | Unknown – number of slots and slot meaning unclear |
+| LAMPS? | Light source usage hours | `LAMPS=0 28 0 0:` | Space-separated pairs per light source: `<normal_hours> <eco_hours>` (two light sources → four values total) | Unknown – field count may vary by model |
