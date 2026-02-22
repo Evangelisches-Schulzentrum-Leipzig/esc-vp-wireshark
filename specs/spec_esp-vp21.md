@@ -65,6 +65,19 @@ The projector returns “ERR” and a return key code (`0x0D`) and a colon (`0x3
 | LUMCONST? | Constant brightness mode | Follows format x1 x2<br>x1: mode<ul><li>`00`: Off</li><li>`01`: On</li></ul>x2: Brightness level `0` to `255` ||
 | IMNWPNAME? | Projector name | [String] ||
 | NWPNAME? | Projector name | [String] ||
+| SOURCELIST? | Available input sources | Space-separated pairs of `code name` (variable length). Names use `^` as an internal space substitute.<br>Example: `30 HDMI1 A0 HDMI2 10 Computer1 41 Video 51 USB^Display 52 USB 53 LAN 56 Screen^Mirroring1 59 Screen^Mirroring2` | Values model dependent |
+| NWMAC? | Wired MAC address | 12-character hexadecimal ASCII string (no separators).<br>Example: `F82551D588C7` → `F8:25:51:D5:88:C7` ||
+| NWWLMAC? | Wireless MAC address | 12-character hexadecimal ASCII string (no separators).<br>Example: `6855D42356A4` → `68:55:D4:23:56:A4` ||
+| NWCNF? | Wired network configuration | Space-separated: `<DHCP> <IP> <Subnet> <Gateway>`<br>`DHCP`: `ON` or `OFF`; remaining fields are IPv4 addresses (dotted decimal, leading zeros not required).<br>When DHCP is ON the projector returns `0.0.0.0` for IP/Subnet/Gateway.<br>Example: `ON 169.254.116.21 255.255.0.0 0.0.0.0` ||
+| NWIPDISP? | Wired IP address display on projector | `ON`: Display on, `OFF`: Display off ||
+| NWWLIPDISP? | Wireless IP address display on projector | `ON`: Display on, `OFF`: Display off ||
+| NWWLCNFS? | Wireless network configuration (IEEE 802.1x) | Space-separated: `<DHCP> <IP> <Subnet> <Gateway> <Options> <ESSID>`<br>`DHCP`: `ON` or `OFF`; IP/Subnet/Gateway are IPv4 dotted-decimal addresses.<br>`Options`: 2-character hex byte — Bit 0: Ad-Hoc mode, Bit 1: ESSID valid (1=valid), Bits 2–15: reserved.<br>`ESSID`: max. 32 characters, valid only when Bit 1 of Options is set.<br>When DHCP is ON, IP/Subnet/Gateway are ignored and `0.0.0.0` is sent.<br>Example: `ON 10.101.10.38 255.255.255.0 10.101.10.1 02 ESZ-Box` | IEEE 802.1x wireless networks |
+| NWWLSEC? | Wireless security configuration | Packed 6-character hex string `wxyyzz`:<br>`w` (4 bit): Encryption — `0`: None, `1`: WEP, `2`: TKIP, `3`: CKIP, `4`: AES, `5-F`: Reserved<br>`x` (4 bit): Key length — `0`: None, `1`: 64-bit, `2`: 128-bit, `3`: 152-bit, `4-F`: Reserved<br>`yy` (1 byte): EAP method — `00`: None, `01`: Shared key, `02`: TTLS, `03`: TLS, `04`: LEAP, `05`: MD5, `06`: PEAP, `07-FF`: Reserved<br>`zz` (1 byte): Authentication — `00`: None, `01`: 802.1x (RADIUS), `02`: WPA, `03`: WPA2, `04-FF`: Reserved ||
+| NWDNS? | Wired DNS server addresses | Space-separated: `<PrimaryDNS> <SecondaryDNS>` (IPv4 dotted decimal) ||
+| NWWLCNF? | Wireless network configuration | Space-separated: `<DHCP> <IP> <Subnet> <Gateway> <t> [<ESSID>] [<WEPkey>]`<br>`t` (1 hex char): flags — Bit 2: ESSID specified, Bit 1: WEP key valid, Bit 0: Ad-Hoc ON<br>Values: `0`=No ESSID/No WEP/Adhoc OFF, `1`=Adhoc ON, `2`=WEP valid, `4`=ESSID, `6`=ESSID+WEP, `7`=ESSID+WEP+Adhoc (etc.)<br>ESSID: max 32 chars, present only when Bit 2 set. WEP key: 26 hex chars (13 bytes), present only when Bit 1 set. ||
+| NWWLDNS? | Wireless DNS server addresses | Space-separated: `<PrimaryDNS> <SecondaryDNS>` (IPv4 dotted decimal) ||
+| NWIF? | Active network interface type | 1-byte hex — `00`: Wired LAN, `01`: 802.11b, `02`: 802.11a, `03`: 802.11g, `04-FF`: Reserved ||
+| NWPRIMIF? | Priority network interface | `0`: Wired LAN, `1`: Wireless LAN ||
 ### 2.2. Set Commands
 | Command | Description | Values | Remarks |
 |---------|-------------|--------|---------|
@@ -104,5 +117,6 @@ The Range of step parameters is model dependent.
 | Command | Description | Observed Response | Inferred Format | Remarks |
 |---------|-------------|-------------------|-----------------|---------|
 | PWSTATUS? | Power status (extended) | `PWSTATUS=03 00000002 00000000 T1 F1:` | Space-separated: `status flags1 flags2 field4 field5` | Unknown – status byte may overlap with `PWR?` values |
+| NWESSDISP? | ESSID display | `NWESSDISP=01:` | Single decimal value; `01` observed when ESSID display is enabled | Unknown – full value range unclear |
 | VER? | Firmware version | `VER=3X011864JFWWV116VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----:` | First token before repeated `VER=----` fillers is the active firmware version string; remaining slots appear to represent unpopulated firmware banks | Unknown – number of slots and slot meaning unclear |
 | LAMPS? | Light source usage hours | `LAMPS=0 28 0 0:` | Space-separated pairs per light source: `<normal_hours> <eco_hours>` (two light sources → four values total) | Unknown – field count may vary by model |

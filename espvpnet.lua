@@ -128,10 +128,24 @@ local VP21_COMMANDS = {
     LUMCONST    = "Constant Brightness",
     IMNWPNAME   = "Projector Name (IM)",
     NWPNAME     = "Projector Name",
+    NWMAC       = "Wired MAC Address",
+    NWWLMAC     = "Wireless MAC Address",
+    NWCNF       = "Wired Network Config",
+    NWIPDISP    = "Wired IP Address Display",
+    NWWLIPDISP  = "Wireless IP Address Display",
+    NWWLCNFS    = "Wireless Network Config (802.1x)",
+    NWWLSEC     = "Wireless Security Config",
+    NWDNS       = "Wired DNS Servers",
+    NWWLCNF     = "Wireless Network Config",
+    NWWLDNS     = "Wireless DNS Servers",
+    NWIF        = "Network Interface Type",
+    NWPRIMIF    = "Priority Network Interface",
     -- Undocumented / vendor-specific
     PWSTATUS    = "Power Status (extended)",
     VER         = "Firmware Version",
     LAMPS       = "Light Source Hours",
+    SOURCELIST  = "Available Input Sources",
+    NWESSDISP   = "ESSID Display",
 }
 
 -- Parameter value lookup tables per command
@@ -208,6 +222,22 @@ local VP21_PARAM_VALUES = {
     },
     FLWARNING = {
         ON = "Warning On", OFF = "Warning Off",
+    },
+    NWIPDISP = {
+        ON = "Wired IP address display On", OFF = "Wired IP address display Off",
+    },
+    NWWLIPDISP = {
+        ON = "Wireless IP address display On", OFF = "Wireless IP address display Off",
+    },
+    NWIF = {
+        ["00"] = "Wired LAN",
+        ["01"] = "802.11b",
+        ["02"] = "802.11a",
+        ["03"] = "802.11g",
+    },
+    NWPRIMIF = {
+        ["0"] = "Wired LAN (priority)",
+        ["1"] = "Wireless LAN (priority)",
     },
     SIGNAL = {
         ["00"] = "No Signal",
@@ -287,6 +317,32 @@ local VP21_MULTI_PARAMS = {
         { label = "Light 2 Normal" },
         { label = "Light 2 Eco" },
     },
+    -- NWCNF: "DHCP IP Subnet Gateway"
+    NWCNF = {
+        { label = "DHCP",    values = { ON = "On", OFF = "Off" } },
+        { label = "IP" },
+        { label = "Subnet" },
+        { label = "Gateway" },
+    },
+    -- NWWLCNFS: "DHCP IP Subnet Gateway Options ESSID"
+    -- Options is a 2-char hex byte: bit0=Ad-Hoc, bit1=ESSID valid
+    NWWLCNFS = {
+        { label = "DHCP",    values = { ON = "On", OFF = "Off" } },
+        { label = "IP" },
+        { label = "Subnet" },
+        { label = "Gateway" },
+        { label = "Options (hex)" },
+        { label = "ESSID" },
+    },
+    -- NWDNS / NWWLDNS: "primary secondary"
+    NWDNS = {
+        { label = "Primary DNS" },
+        { label = "Secondary DNS" },
+    },
+    NWWLDNS = {
+        { label = "Primary DNS" },
+        { label = "Secondary DNS" },
+    },
 }
 
 -- Custom decoders for commands whose response format cannot be handled by a
@@ -297,6 +353,77 @@ local VP21_CUSTOM_DECODERS = {
     VER = function(param)
         local fw = param:match("^(.-)VER=") or param
         return "Firmware: " .. fw
+    end,
+    -- NWWLSEC: packed 6-char hex string "wxyyzz"
+    -- w=encryption(4bit), x=key length(4bit), yy=EAP method(1byte), zz=auth type(1byte)
+    NWWLSEC = function(param)
+        if #param ~= 6 then return nil end
+        local w   = param:sub(1,1)
+        local x   = param:sub(2,2)
+        local yy  = param:sub(3,4)
+        local zz  = param:sub(5,6)
+        local enc = ({ ["0"]="None", ["1"]="WEP", ["2"]="TKIP",
+                       ["3"]="CKIP", ["4"]="AES" })[w] or ("Reserved ("..w..")")
+        local klen= ({ ["0"]="None", ["1"]="64-bit", ["2"]="128-bit",
+                       ["3"]="152-bit" })[x] or ("Reserved ("..x..")")
+        local eap = ({ ["00"]="None", ["01"]="Shared Key", ["02"]="TTLS",
+                       ["03"]="TLS",  ["04"]="LEAP", ["05"]="MD5",
+                       ["06"]="PEAP" })[yy] or ("Reserved ("..yy..")")
+        local auth= ({ ["00"]="None", ["01"]="802.1x / RADIUS", ["02"]="WPA",
+                       ["03"]="WPA2" })[zz] or ("Reserved ("..zz..")")
+        return "Encryption: "..enc..", Key Length: "..klen..", EAP: "..eap..", Auth: "..auth
+    end,
+    -- NWWLCNF: "ww IP Subnet Gateway t [ESSID] [WEPkey]"
+    -- t = flag byte: bits encode ESSID-specified(2), WEP-valid(1), Adhoc(0)
+    NWWLCNF = function(param)
+        local FLAG_DESC = {
+            ["0"] = "No ESSID, No WEP, Adhoc OFF",
+            ["1"] = "No ESSID, No WEP, Adhoc ON",
+            ["2"] = "No ESSID, WEP valid, Adhoc OFF",
+            ["3"] = "No ESSID, WEP valid, Adhoc ON",
+            ["4"] = "ESSID, No WEP, Adhoc OFF",
+            ["5"] = "ESSID, No WEP, Adhoc ON",
+            ["6"] = "ESSID, WEP valid, Adhoc OFF",
+            ["7"] = "ESSID, WEP valid, Adhoc ON",
+        }
+        local parts = {}
+        for p in param:gmatch("%S+") do parts[#parts+1] = p end
+        if #parts < 5 then return nil end
+        local dhcp    = parts[1] == "ON" and "On" or "Off"
+        local flag    = parts[5]
+        local fdesc   = FLAG_DESC[flag] or ("Unknown flag ("..flag..")")
+        local out = "DHCP: "..dhcp..", IP: "..parts[2]..", Subnet: "..parts[3]..
+                    ", Gateway: "..parts[4]..", Flags: "..fdesc
+        if #parts >= 6 then out = out .. ", ESSID: " .. parts[6] end
+        if #parts >= 7 then out = out .. ", WEP key: " .. parts[7] end
+        return out
+    end,
+    -- Names may use ^ as an internal space substitute (e.g. USB^Display -> USB Display).
+    SOURCELIST = function(param)
+        local entries = {}
+        local parts = {}
+        for p in param:gmatch("%S+") do parts[#parts + 1] = p end
+        local i = 1
+        while i + 1 <= #parts do
+            local code = parts[i]
+            local name = parts[i + 1]:gsub("%^", " ")
+            entries[#entries + 1] = code .. "=" .. name
+            i = i + 2
+        end
+        return #entries > 0 and table.concat(entries, ", ") or nil
+    end,
+    -- NWMAC / NWWLMAC: 12-char hex string -> colon-separated MAC address
+    NWMAC = function(param)
+        if #param == 12 then
+            return param:gsub("(..)(..)(..)(..)(..)(..)", "%1:%2:%3:%4:%5:%6")
+        end
+        return nil
+    end,
+    NWWLMAC = function(param)
+        if #param == 12 then
+            return param:gsub("(..)(..)(..)(..)(..)(..)", "%1:%2:%3:%4:%5:%6")
+        end
+        return nil
     end,
 }
 
