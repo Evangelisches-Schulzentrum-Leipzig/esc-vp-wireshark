@@ -108,13 +108,13 @@ function p_escvpnet.dissector(buffer, pinfo, tree)
         
         -- Update Info Column
         if status_val == 0 then
-            pinfo.cols.info = "Request: " .. msg_type_str
+            pinfo.cols.info = "ESP/VP.net Request:  " .. msg_type_str
         else
-            pinfo.cols.info = "Response: " .. msg_type_str .. " [" .. status_str .. "]"
+            pinfo.cols.info = "ESP/VP.net Response: " .. msg_type_str .. " [" .. status_str .. "]"
         end
 
         -- Create Tree
-        local subtree = tree:add(p_escvpnet, buffer(), "Epson ESC/VP.net Handshake")
+        local subtree = tree:add(p_escvpnet, buffer(), "Epson ESC/VP.net Protocol")
         
         -- Common Header (16 bytes) [cite: 5]
         subtree:add(f_signature, buffer(0, 10))
@@ -163,7 +163,7 @@ function p_escvpnet.dissector(buffer, pinfo, tree)
     local content_raw = buffer():string()
     local content_clean = content_raw:gsub("[\r\n]", "") -- Remove CR/LF for display
 
-    local ascii_subtree = tree:add(p_escvpnet, buffer(), "Epson Command Session (ESC/VP21)")
+    local ascii_subtree = tree:add(p_escvpnet, buffer(), "Epson ESC/VP21 Protocol")
 
     if content_clean == ":" then
         pinfo.cols.info = "ACK (:)"
