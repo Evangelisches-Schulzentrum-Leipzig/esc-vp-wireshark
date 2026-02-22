@@ -125,6 +125,9 @@ local VP21_COMMANDS = {
     SIGNAL      = "Signal State",
     MENUINFO    = "Info Menu",
     ERR         = "Error Code",
+    LUMCONST    = "Constant Brightness",
+    IMNWPNAME   = "Projector Name (IM)",
+    NWPNAME     = "Projector Name",
 }
 
 -- Parameter value lookup tables per command
@@ -230,6 +233,34 @@ local VP21_PARAM_VALUES = {
     },
 }
 
+-- Multi-part parameter descriptors for commands whose value is space-separated fields.
+-- Each entry is an ordered list of { label, values? } field descriptors.
+-- The generic decoder in decode_vp21_param iterates these to build a human-readable string.
+local VP21_MULTI_PARAMS = {
+    -- LUMCONST: "x1 x2"  x1=mode, x2=brightness (0-255)
+    LUMCONST = {
+        { label = "Mode",       values = { ["00"] = "Off", ["01"] = "On" } },
+        { label = "Brightness" },
+    },
+    -- FLTIME: "x1 x2"  x1=object, x2=time (model dependent)
+    FLTIME = {
+        { label = "Object", values = {
+            ["00"] = "All objects",
+            ["01"] = "Object 1",
+            ["02"] = "Object 2",
+            ["03"] = "Object 3",
+        }},
+        { label = "Time" },
+    },
+    -- PINP: "source posX posY size"
+    PINP = {
+        { label = "Source" },
+        { label = "X Position" },
+        { label = "Y Position" },
+        { label = "Size" },
+    },
+}
+
 -- Step parameters (INC/DEC/INIT) apply to these commands
 local VP21_STEP_PARAMS = {
     INC  = "Increment",
@@ -242,6 +273,21 @@ local function decode_vp21_param(cmd, param)
     -- Check step parameters first (valid for set commands)
     if VP21_STEP_PARAMS[param] then
         return VP21_STEP_PARAMS[param]
+    end
+    -- Generic multi-part parameter decoding (space-separated fields)
+    local multi = VP21_MULTI_PARAMS[cmd]
+    if multi then
+        local parts = {}
+        for p in param:gmatch("%S+") do parts[#parts + 1] = p end
+        local out = {}
+        for i, field in ipairs(multi) do
+            local val = parts[i]
+            if val then
+                local decoded = field.values and field.values[val]
+                out[#out + 1] = field.label .. ": " .. (decoded and (decoded .. " (" .. val .. ")") or val)
+            end
+        end
+        return #out > 0 and table.concat(out, ", ") or nil
     end
     -- Look up command-specific value table
     local tbl = VP21_PARAM_VALUES[cmd]

@@ -62,6 +62,9 @@ The projector returns “ERR” and a return key code (`0x0D`) and a colon (`0x3
 | SIGNAL? | Signal state | `00`: No signal, `01`: Signal detected, `FF`: Unsupported signal ||
 | MENUINFO? | Info Menu | `00`: All data, `01`: Status, `02`: Operation hours, `05`: Event ID ||
 | ERR? | Error code | `00`: No error/Error recovered, `01`: Fan error, `03`: Lamp failure at power on, `04`: High internal temperature error, `06`: Lamp error, `07`: Open Lamp cover door error, `08`: Cinema filter error, `09`: Electric dual-layered capacitor is disconnected , `0A`: Auto iris error, `0B`: Subsystem Error, `0C`: Low air flow error, `0D`: Air filter air flow sensor error, `0E`: Power supply unit error (Ballast) ||
+| LUMCONST? | Constant brightness mode | Follows format x1 x2<br>x1: mode<ul><li>`00`: Off</li><li>`01`: On</li></ul>x2: Brightness level `0` to `255` ||
+| IMNWPNAME? | Projector name | [String] ||
+| NWPNAME? | Projector name | [String] ||
 ### 2.2. Set Commands
 | Command | Description | Values | Remarks |
 |---------|-------------|--------|---------|
