@@ -383,15 +383,15 @@ function p_escvpnet.dissector(buffer, pinfo, tree)
     end
 
     -- Error response from projector
-    if content_clean == "ERR" then
+    if content_clean == "ERR" or content_clean:match("^ERR") then
         pinfo.cols.info = "ESC/VP21 ERROR"
         subtree:add(f_vp21_type, buffer(), "Error")
         return
     end
 
-    -- Query response: "CMD=VALUE" (from projector, src port 3629)
-    local resp_cmd, resp_val = content_clean:match("^(%u+)=(.+)$")
-    if resp_cmd and pinfo.src_port == 3629 then
+    -- Query response: "CMD=VALUE" or "CMD = VALUE" (from projector, src port 3629)
+    local resp_cmd, resp_val = content_clean:match("^(%u+)%s*=%s*(.+)$")
+    if resp_cmd and pinfo.src_port == 3629 and VP21_COMMANDS[resp_cmd] then
         local cmd_desc = VP21_COMMANDS[resp_cmd] or resp_cmd
         local decoded = decode_vp21_param(resp_cmd, resp_val)
         local info = "ESC/VP21 Response: " .. cmd_desc .. " = " .. resp_val
@@ -410,9 +410,9 @@ function p_escvpnet.dissector(buffer, pinfo, tree)
 
     -- Get command: "CMD?" (from client)
     local query_cmd = content_clean:match("^(%u+)%?$")
-    if query_cmd then
+    if query_cmd and VP21_COMMANDS[query_cmd] then
         local cmd_desc = VP21_COMMANDS[query_cmd] or query_cmd
-        pinfo.cols.info = "ESC/VP21 Query: " .. cmd_desc .. "?"
+        pinfo.cols.info = "ESC/VP21 Query: " .. cmd_desc
 
         subtree:add(f_vp21_type,     buffer(), "Get (Query)")
         subtree:add(f_vp21_cmd,      buffer(), query_cmd)
@@ -422,7 +422,7 @@ function p_escvpnet.dissector(buffer, pinfo, tree)
 
     -- Set command: "CMD PARAM" (from client)
     local set_cmd, set_param = content_clean:match("^(%u+)%s+(.+)$")
-    if set_cmd then
+    if set_cmd and VP21_COMMANDS[set_cmd] then
         local cmd_desc = VP21_COMMANDS[set_cmd] or set_cmd
         local decoded = decode_vp21_param(set_cmd, set_param)
         local info = "ESC/VP21 Set: " .. cmd_desc .. " " .. set_param
@@ -441,10 +441,10 @@ function p_escvpnet.dissector(buffer, pinfo, tree)
 
     -- Fallback: unrecognized ASCII data
     if pinfo.src_port == 3629 then
-        pinfo.cols.info = "ESC/VP21 Response: " .. content_clean
+        pinfo.cols.info = "ESC/VP21 Unknown Response: " .. content_clean
         subtree:add(f_vp21_type, buffer(), "Response (Unknown)")
     else
-        pinfo.cols.info = "ESC/VP21 Command: " .. content_clean
+        pinfo.cols.info = "ESC/VP21 Unknown Command: " .. content_clean
         subtree:add(f_vp21_type, buffer(), "Command (Unknown)")
     end
 end
