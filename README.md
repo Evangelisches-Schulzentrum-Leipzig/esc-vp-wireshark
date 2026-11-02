@@ -6,6 +6,8 @@ A Wireshark Lua dissector plugin for the **Epson ESC/VP.net** projector control 
 
 - **ESC/VP.net handshake dissection** — decodes the 16-byte binary common header (signature, version, message type, status, headers)
 - **Variable header parsing** — Password, New-Password, Projector-Name, IM-Type, and Projector-Command-Type with per-type attribute decoding
+- **V2 authentication decoding** — identifies CONNECT challenge and proof packets and exposes the nonce and both digest halves as raw bytes
+- **TCP stream reassembly** — waits for complete ESC/VP.net headers and ESC/VP21 command/response terminators across TCP segments
 - **ESC/VP21 ASCII session parsing** — recognizes Set commands (`PWR ON`), Get queries (`SOURCE?`), query responses (`LAMP=3000`), ACK (`:`) and ERR
 - **Parameter value decoding** — translates raw values into human-readable descriptions for 27 commands (power state, input source, aspect ratio, color mode, lamp hours, etc.)
 - **Expert info** — warnings on error status codes, errors on malformed/truncated packets
@@ -15,7 +17,8 @@ A Wireshark Lua dissector plugin for the **Epson ESC/VP.net** projector control 
 
 | Protocol | Version | Transport | Description |
 |----------|---------|-----------|-------------|
-| ESC/VP.net | 1.0 (`0x10`) | TCP/UDP 3629 | Binary handshake: HELLO, PASSWORD, CONNECT |
+| ESC/VP.net | 1.0 (`0x10`) | TCP/UDP 3629 | TCP PASSWORD/CONNECT; UDP HELLO |
+| ESC/VP.net | 2.0 (`0x20`) | TCP 3629 | CONNECT challenge and two-part SHA-256 proof |
 | ESC/VP21 | 1.0 | TCP (post-CONNECT) | ASCII command session (Set, Get, Response) |
 
 ## Installation
@@ -39,6 +42,7 @@ escvpnet.status == 0x43           -- Forbidden (wrong password) responses
 escvpnet.vp21.command == "PWR"    -- Power commands/queries
 escvpnet.vp21.decoded             -- Packets with decoded parameter values
 escvpnet.header.im_type           -- Packets containing IM-Type headers
+escvpnet.header.v2_nonce          -- V2 challenge nonce
 ```
 
 ## Documentation

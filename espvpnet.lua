@@ -43,6 +43,12 @@ local PASSWORD_ATTRS = {
     [1] = "Plain (US-ASCII)"
 }
 
+local V2_PASSWORD_ATTRS = {
+    [3] = "Challenge / Nonce",
+    [4] = "Digest (First Half)",
+    [5] = "Digest (Second Half)"
+}
+
 -- Projector-Name Attribute Values (Section 3.2)
 local PROJNAME_ATTRS = {
     [0] = "NULL (No Projector Name)",
@@ -477,7 +483,7 @@ local f_signature   = ProtoField.string("escvpnet.signature", "Signature", base.
 local f_ver_major   = ProtoField.uint8("escvpnet.version.major", "Major Version", base.DEC, nil, 0xF0)
 local f_ver_minor   = ProtoField.uint8("escvpnet.version.minor", "Minor Version", base.DEC, nil, 0x0F)
 local f_msg_type    = ProtoField.uint8("escvpnet.type", "Message Type", base.DEC, MSG_TYPES)
-local f_seq_num     = ProtoField.uint16("escvpnet.seq", "Sequence Number", base.DEC)
+local f_seq_num     = ProtoField.uint16("escvpnet.seq", "Reserved / Sequence Number", base.HEX)
 local f_status      = ProtoField.uint8("escvpnet.status", "Status Code", base.HEX, STATUS_CODES)
 local f_hdr_count   = ProtoField.uint8("escvpnet.header_count", "Header Count", base.DEC)
 
@@ -485,9 +491,13 @@ local f_hdr_count   = ProtoField.uint8("escvpnet.header_count", "Header Count", 
 local f_h_id        = ProtoField.uint8("escvpnet.header.id", "Header ID", base.DEC, HEADER_IDS)
 local f_h_attr      = ProtoField.uint8("escvpnet.header.attr", "Attribute", base.HEX)
 local f_h_pwd_attr  = ProtoField.uint8("escvpnet.header.pwd_attr", "Password Attribute", base.HEX, PASSWORD_ATTRS)
+local f_h_v2_auth_attr = ProtoField.uint8("escvpnet.header.v2_auth_attr", "V2 Password Attribute", base.HEX, V2_PASSWORD_ATTRS)
 local f_h_name_attr = ProtoField.uint8("escvpnet.header.name_attr", "Name Attribute", base.HEX, PROJNAME_ATTRS)
 local f_h_info_str  = ProtoField.string("escvpnet.header.info", "Info String", base.ASCII)
 local f_h_info_raw  = ProtoField.bytes("escvpnet.header.info_raw", "Info (Raw)")
+local f_h_v2_nonce  = ProtoField.bytes("escvpnet.header.v2_nonce", "V2 Challenge Nonce")
+local f_h_v2_digest_first = ProtoField.bytes("escvpnet.header.v2_digest_first", "V2 Digest (First Half)")
+local f_h_v2_digest_second = ProtoField.bytes("escvpnet.header.v2_digest_second", "V2 Digest (Second Half)")
 local f_h_im_type   = ProtoField.uint8("escvpnet.header.im_type", "IM Type Model", base.HEX, IM_TYPES)
 local f_h_cmd_type  = ProtoField.uint8("escvpnet.header.cmd_type", "Command System", base.HEX, CMD_TYPES)
 
@@ -502,8 +512,9 @@ local f_vp21_decoded = ProtoField.string("escvpnet.vp21.decoded", "Decoded Value
 p_escvpnet.fields = {
     f_signature, f_ver_major, f_ver_minor, f_msg_type, f_seq_num,
     f_status, f_hdr_count,
-    f_h_id, f_h_attr, f_h_pwd_attr, f_h_name_attr,
-    f_h_info_str, f_h_info_raw, f_h_im_type, f_h_cmd_type,
+    f_h_id, f_h_attr, f_h_pwd_attr, f_h_v2_auth_attr, f_h_name_attr,
+    f_h_info_str, f_h_info_raw, f_h_v2_nonce, f_h_v2_digest_first,
+    f_h_v2_digest_second, f_h_im_type, f_h_cmd_type,
     f_vp21_raw, f_vp21_type, f_vp21_cmd, f_vp21_cmd_desc,
     f_vp21_param, f_vp21_decoded
 }
@@ -513,195 +524,385 @@ local ef_error_status = ProtoExpert.new("escvpnet.error_status", "Error Status",
     expert.group.RESPONSE_CODE, expert.severity.WARN)
 local ef_malformed = ProtoExpert.new("escvpnet.malformed", "Malformed Packet",
     expert.group.MALFORMED, expert.severity.ERROR)
+local ef_transport_warning = ProtoExpert.new("escvpnet.transport_warning", "Transport Rule",
+    expert.group.PROTOCOL, expert.severity.WARN)
 
-p_escvpnet.experts = { ef_error_status, ef_malformed }
+p_escvpnet.experts = { ef_error_status, ef_malformed, ef_transport_warning }
 
 --------------------------------------------------------------------------------
 -- 3. Dissector Function
 --------------------------------------------------------------------------------
+local SIGNATURE = "ESC/VP.net"
+
+local function request_more_data(pinfo, offset, needed)
+    if not pinfo.can_desegment then return false end
+    pinfo.desegment_offset = offset
+    pinfo.desegment_len = needed or DESEGMENT_ONE_MORE_SEGMENT
+    return true
+end
+
+local function is_signature_prefix(data)
+    return #data < #SIGNATURE and data == SIGNATURE:sub(1, #data)
+end
+
+local function is_printable_padded_ascii(value)
+    local seen_nul = false
+    local has_text = false
+    for i = 1, #value do
+        local byte = value:byte(i)
+        if byte == 0 then
+            seen_nul = true
+        elseif seen_nul or byte < 0x20 or byte > 0x7E then
+            return false
+        else
+            has_text = true
+        end
+    end
+    return has_text
+end
+
+local function valid_header_attribute(version, msg_type, id, attr)
+    if id == 1 then
+        if version == 0x20 and msg_type == 3 then
+            return V2_PASSWORD_ATTRS[attr] ~= nil
+        end
+        return PASSWORD_ATTRS[attr] ~= nil
+    elseif id == 2 then
+        return PASSWORD_ATTRS[attr] ~= nil
+    elseif id == 3 then
+        return PROJNAME_ATTRS[attr] ~= nil
+    elseif id == 4 then
+        return IM_TYPES[attr] ~= nil
+    elseif id == 5 then
+        return CMD_TYPES[attr] ~= nil
+    end
+    return false
+end
+
+local function add_malformed(item, message)
+    item:add_proto_expert_info(ef_malformed, message)
+end
+
+local function dissect_binary_packet(buffer, offset, packet_length, pinfo, tree)
+    local version = buffer(offset + 10, 1):uint()
+    local msg_type = buffer(offset + 11, 1):uint()
+    local status = buffer(offset + 14, 1):uint()
+    local header_count = buffer(offset + 15, 1):uint()
+    local is_v2_challenge = version == 0x20 and msg_type == 3 and status == 0x41
+        and header_count == 1 and buffer(offset + 16, 1):uint() == 1
+        and buffer(offset + 17, 1):uint() == 3
+    local is_v2_challenge_request = version == 0x20 and msg_type == 3 and status == 0
+        and header_count == 1 and buffer(offset + 16, 1):uint() == 1
+        and buffer(offset + 17, 1):uint() == 3
+    local is_v2_proof_request = version == 0x20 and msg_type == 3 and status == 0
+        and header_count == 2 and buffer(offset + 16, 1):uint() == 1
+        and buffer(offset + 17, 1):uint() == 4
+        and buffer(offset + 34, 1):uint() == 1
+        and buffer(offset + 35, 1):uint() == 5
+
+    local msg_type_str = MSG_TYPES[msg_type] or "Unknown"
+    local status_str = STATUS_CODES[status] or string.format("Unknown (0x%02X)", status)
+    local subtree = tree:add(p_escvpnet, buffer(offset, packet_length),
+        "Epson ESC/VP.net Protocol")
+
+    subtree:add(f_signature, buffer(offset, 10))
+    local ver_node = subtree:add(buffer(offset + 10, 1),
+        string.format("Version: %d.%d (0x%02X)", math.floor(version / 16), version % 16, version))
+    ver_node:add(f_ver_major, buffer(offset + 10, 1))
+    ver_node:add(f_ver_minor, buffer(offset + 10, 1))
+    subtree:add(f_msg_type, buffer(offset + 11, 1))
+    subtree:add(f_seq_num, buffer(offset + 12, 2))
+    local status_item = subtree:add(f_status, buffer(offset + 14, 1))
+    subtree:add(f_hdr_count, buffer(offset + 15, 1))
+
+    if status >= 0x40 and not is_v2_challenge then
+        status_item:add_proto_expert_info(ef_error_status,
+            "Error: " .. (STATUS_CODES[status] or "Unknown"))
+    end
+
+    local request = status == 0
+    local reserved = buffer(offset + 12, 2):uint()
+    if request and reserved ~= 0 then
+        add_malformed(subtree, "Request reserved field is not zero")
+    end
+    if request and msg_type > 3 then
+        add_malformed(subtree, "Request message type is outside the defined range 0..3")
+    end
+    if request and version ~= 0x10 and version ~= 0x20 then
+        add_malformed(subtree, string.format("Unsupported protocol version 0x%02X", version))
+    end
+
+    if request and version == 0x10 then
+        if pinfo.can_desegment and msg_type ~= 2 and msg_type ~= 3 then
+            subtree:add_proto_expert_info(ef_transport_warning,
+                "V1 TCP requests must use PASSWORD or CONNECT")
+        elseif not pinfo.can_desegment and msg_type ~= 1 then
+            subtree:add_proto_expert_info(ef_transport_warning,
+                "V1 UDP requests must use HELLO")
+        end
+    end
+
+    if version == 0x20 and msg_type == 3 and status == 0x41 and not is_v2_challenge then
+        add_malformed(subtree, "V2 CONNECT challenge response is missing its nonce header")
+    end
+
+    if request and version == 0x10 then
+        if msg_type == 1 and header_count ~= 0 then
+            add_malformed(subtree, "V1 HELLO request must not contain headers")
+        end
+        if msg_type == 2 or msg_type == 3 then
+            for i = 1, header_count do
+                local header_offset = offset + 16 + ((i - 1) * 18)
+                local id = buffer(header_offset, 1):uint()
+                if msg_type == 2 and id ~= 1 and id ~= 2 then
+                    add_malformed(subtree, "V1 PASSWORD request contains an unsupported header")
+                elseif msg_type == 3 and id ~= 1 then
+                    add_malformed(subtree, "V1 CONNECT request contains a non-password header")
+                end
+            end
+        end
+    elseif request and version == 0x20 and msg_type == 3 then
+        if not is_v2_challenge_request and not is_v2_proof_request then
+            add_malformed(subtree, "V2 CONNECT request does not match the challenge or proof format")
+        elseif is_v2_challenge_request then
+            local challenge_value = buffer(offset + 18, 16):string()
+            if challenge_value ~= string.rep("\0", 16) then
+                add_malformed(subtree, "V2 challenge request value must be zero-filled")
+            end
+        end
+    end
+
+    for i = 1, header_count do
+        local header_offset = offset + 16 + ((i - 1) * 18)
+        local id = buffer(header_offset, 1):uint()
+        local attr = buffer(header_offset + 1, 1):uint()
+        local id_str = HEADER_IDS[id] or "Unknown"
+        local h_subtree = subtree:add(buffer(header_offset, 18),
+            "Header " .. i .. ": " .. id_str)
+        local info_range = buffer(header_offset + 2, 16)
+
+        h_subtree:add(f_h_id, buffer(header_offset, 1))
+        if id == 1 and version == 0x20 and V2_PASSWORD_ATTRS[attr] then
+            h_subtree:add(f_h_v2_auth_attr, buffer(header_offset + 1, 1))
+            if attr == 3 then
+                h_subtree:add(f_h_v2_nonce, info_range)
+            elseif attr == 4 then
+                h_subtree:add(f_h_v2_digest_first, info_range)
+            else
+                h_subtree:add(f_h_v2_digest_second, info_range)
+            end
+        elseif (id == 1 or id == 2) and PASSWORD_ATTRS[attr] then
+            h_subtree:add(f_h_pwd_attr, buffer(header_offset + 1, 1))
+            h_subtree:add(f_h_info_str, info_range)
+        elseif id == 3 then
+            h_subtree:add(f_h_name_attr, buffer(header_offset + 1, 1))
+            h_subtree:add(f_h_info_str, info_range)
+        elseif id == 4 then
+            h_subtree:add(f_h_im_type, buffer(header_offset + 1, 1))
+            h_subtree:add(f_h_info_raw, info_range)
+        elseif id == 5 then
+            h_subtree:add(f_h_cmd_type, buffer(header_offset + 1, 1))
+            h_subtree:add(f_h_info_raw, info_range)
+        else
+            h_subtree:add(f_h_attr, buffer(header_offset + 1, 1))
+            h_subtree:add(f_h_info_raw, info_range)
+        end
+
+        if request and version == 0x10 then
+            if not valid_header_attribute(version, msg_type, id, attr) then
+                add_malformed(h_subtree, "Invalid V1 header ID or attribute")
+            elseif (msg_type == 2 or msg_type == 3) and id == 1 and attr == 1
+                and not is_printable_padded_ascii(info_range:string()) then
+                add_malformed(h_subtree, "V1 password must be nonblank printable US-ASCII")
+            elseif msg_type == 2 and id == 2 and attr == 1
+                and not is_printable_padded_ascii(info_range:string()) then
+                add_malformed(h_subtree, "V1 new password must be nonblank printable US-ASCII")
+            end
+        end
+    end
+
+    local info
+    if is_v2_challenge then
+        info = "ESC/VP.net V2 CONNECT Challenge [" .. status_str .. "]"
+    elseif is_v2_challenge_request then
+        info = "ESC/VP.net V2 CONNECT Challenge Request"
+    elseif is_v2_proof_request then
+        info = "ESC/VP.net V2 CONNECT Proof Request"
+    elseif request then
+        info = "ESC/VP.net Request: " .. msg_type_str
+    else
+        info = "ESC/VP.net Response: " .. msg_type_str .. " [" .. status_str .. "]"
+    end
+    return info
+end
+
+local function dissect_vp21_frame(frame_buffer, frame_data, pinfo, tree)
+    local content = frame_data:gsub("\r:$", ""):gsub("\r$", "")
+    local content_clean = content:gsub("[\r\n]", "")
+    local subtree = tree:add(p_escvpnet, frame_buffer, "Epson ESC/VP21 Session")
+    subtree:add(f_vp21_raw, frame_buffer, content_clean)
+
+    if content_clean == ":" then
+        pinfo.cols.info = "ESC/VP21 ACK (:)"
+        subtree:add(f_vp21_type, frame_buffer, "ACK")
+        return
+    end
+
+    local resp_cmd, resp_val = content_clean:match("^(%u+)%s*=%s*(.-)$")
+    if resp_val == "" then resp_cmd = nil end
+    if not resp_cmd and content_clean == "ERR" then
+        pinfo.cols.info = "ESC/VP21 ERROR"
+        subtree:add(f_vp21_type, frame_buffer, "Error")
+        return
+    end
+    if resp_cmd and pinfo.src_port == 3629 and VP21_COMMANDS[resp_cmd] then
+        local cmd_desc = VP21_COMMANDS[resp_cmd]
+        local decoded = decode_vp21_param(resp_cmd, resp_val)
+        local info = "ESC/VP21 Response: " .. cmd_desc .. " = " .. resp_val
+        if decoded then info = info .. " (" .. decoded .. ")" end
+        pinfo.cols.info = info
+        subtree:add(f_vp21_type, frame_buffer, "Query Response")
+        subtree:add(f_vp21_cmd, frame_buffer, resp_cmd)
+        subtree:add(f_vp21_cmd_desc, frame_buffer, cmd_desc)
+        subtree:add(f_vp21_param, frame_buffer, resp_val)
+        if decoded then subtree:add(f_vp21_decoded, frame_buffer, decoded) end
+        return
+    end
+
+    local query_cmd = content_clean:match("^(%u+)%?$")
+    if query_cmd and VP21_COMMANDS[query_cmd] then
+        local cmd_desc = VP21_COMMANDS[query_cmd]
+        pinfo.cols.info = "ESC/VP21 Query: " .. cmd_desc
+        subtree:add(f_vp21_type, frame_buffer, "Get (Query)")
+        subtree:add(f_vp21_cmd, frame_buffer, query_cmd)
+        subtree:add(f_vp21_cmd_desc, frame_buffer, cmd_desc)
+        return
+    end
+
+    local set_cmd, set_param = content_clean:match("^(%u+)%s+(.+)$")
+    if set_cmd and VP21_COMMANDS[set_cmd] then
+        local cmd_desc = VP21_COMMANDS[set_cmd]
+        local decoded = decode_vp21_param(set_cmd, set_param)
+        local info = "ESC/VP21 Set: " .. cmd_desc .. " " .. set_param
+        if decoded then info = info .. " (" .. decoded .. ")" end
+        pinfo.cols.info = info
+        subtree:add(f_vp21_type, frame_buffer, "Set Command")
+        subtree:add(f_vp21_cmd, frame_buffer, set_cmd)
+        subtree:add(f_vp21_cmd_desc, frame_buffer, cmd_desc)
+        subtree:add(f_vp21_param, frame_buffer, set_param)
+        if decoded then subtree:add(f_vp21_decoded, frame_buffer, decoded) end
+        return
+    end
+
+    if pinfo.src_port == 3629 then
+        pinfo.cols.info = "ESC/VP21 Unknown Response: " .. content_clean
+        subtree:add(f_vp21_type, frame_buffer, "Response (Unknown)")
+    else
+        pinfo.cols.info = "ESC/VP21 Unknown Command: " .. content_clean
+        subtree:add(f_vp21_type, frame_buffer, "Command (Unknown)")
+    end
+end
+
 function p_escvpnet.dissector(buffer, pinfo, tree)
     local length = buffer:len()
     if length == 0 then return end
 
     pinfo.cols.protocol = p_escvpnet.name
+    local offset = 0
+    local packet_infos = {}
 
-    -- A. BINARY PROTOCOL DETECTION (Handshake)
-    -- "ESC/VP.net" is 10 bytes. The common header is 16 bytes.
-    if length >= 16 and buffer(0, 10):string() == "ESC/VP.net" then
+    while offset < length do
+        local remaining = length - offset
+        local remaining_data = buffer(offset, remaining):string()
+        if remaining >= #SIGNATURE and remaining_data:sub(1, #SIGNATURE) == SIGNATURE then
+            if remaining < 16 then
+                if request_more_data(pinfo, offset, 16 - remaining) then return end
+                local item = tree:add(p_escvpnet, buffer(offset, remaining),
+                    "Truncated ESC/VP.net Common Header")
+                add_malformed(item, "Packet is shorter than the 16-byte common header")
+                return
+            end
 
-        local msg_type_val = buffer(11, 1):uint()
-        local msg_type_str = MSG_TYPES[msg_type_val] or "Unknown"
-        local status_val = buffer(14, 1):uint()
-        local status_str = STATUS_CODES[status_val] or string.format("Unknown (0x%02X)", status_val)
-        local hdr_count = buffer(15, 1):uint()
+            local packet_length = 16 + (buffer(offset + 15, 1):uint() * 18)
+            if remaining < packet_length then
+                if request_more_data(pinfo, offset, packet_length - remaining) then return end
+                local item = tree:add(p_escvpnet, buffer(offset, remaining),
+                    "Truncated ESC/VP.net Packet")
+                add_malformed(item, string.format("Expected %d bytes, got %d",
+                    packet_length, remaining))
+                return
+            end
 
-        -- Update Info Column
-        if status_val == 0x00 then
-            pinfo.cols.info = "ESC/VP.net Request:  " .. msg_type_str
+            packet_infos[#packet_infos + 1] = dissect_binary_packet(
+                buffer, offset, packet_length, pinfo, tree)
+            offset = offset + packet_length
+        elseif remaining < #SIGNATURE and is_signature_prefix(remaining_data) then
+            if request_more_data(pinfo, offset, #SIGNATURE - remaining) then return end
+            local item = tree:add(p_escvpnet, buffer(offset, remaining),
+                "Truncated ESC/VP.net Signature")
+            add_malformed(item, "Packet ends inside the ESC/VP.net signature")
+            return
         else
-            pinfo.cols.info = "ESC/VP.net Response: " .. msg_type_str .. " [" .. status_str .. "]"
+            break
+        end
+    end
+
+    if offset == length then
+        if #packet_infos > 0 then pinfo.cols.info = table.concat(packet_infos, "; ") end
+        return
+    end
+
+    if not pinfo.can_desegment then
+        local item = tree:add(p_escvpnet, buffer(offset, length - offset),
+            "Unexpected non-ESC/VP.net UDP payload")
+        add_malformed(item, "Only UDP HELLO packets are defined by the specification")
+        if #packet_infos > 0 then pinfo.cols.info = table.concat(packet_infos, "; ") end
+        return
+    end
+
+    local is_response = pinfo.src_port == 3629
+    local stream_offset = offset
+    local stream_length = length - stream_offset
+    local stream_data = buffer(stream_offset, stream_length):string()
+    local is_partial_signature = stream_length < #SIGNATURE and is_signature_prefix(stream_data)
+
+    if is_partial_signature and request_more_data(pinfo, stream_offset, #SIGNATURE - stream_length) then
+        if #packet_infos > 0 then pinfo.cols.info = table.concat(packet_infos, "; ") end
+        return
+    end
+
+    while stream_offset < length do
+        local data = buffer(stream_offset, length - stream_offset):string()
+        local frame_length
+        if is_response and data:sub(1, 1) == ":" then
+            frame_length = 1
+        elseif is_response then
+            local terminator = data:find("\r:", 1, true)
+            if terminator then frame_length = terminator + 1 end
+        else
+            local terminator = data:find("\r", 1, true)
+            if terminator then frame_length = terminator end
         end
 
-        -- Create Tree
-        local subtree = tree:add(p_escvpnet, buffer(), "Epson ESC/VP.net Protocol")
-
-        -- Common Header (16 bytes)
-        subtree:add(f_signature, buffer(0, 10))
-        local ver_byte = buffer(10, 1):uint()
-        local ver_major = math.floor(ver_byte / 16)
-        local ver_minor = ver_byte % 16
-        local ver_node = subtree:add(buffer(10, 1),
-            string.format("Version: %d.%d (0x%02X)", ver_major, ver_minor, ver_byte))
-        ver_node:add(f_ver_major, buffer(10, 1))
-        ver_node:add(f_ver_minor, buffer(10, 1))
-
-        subtree:add(f_msg_type, buffer(11, 1))
-        subtree:add(f_seq_num, buffer(12, 2))
-        local status_item = subtree:add(f_status, buffer(14, 1))
-        -- Flag error status codes with expert info
-        if status_val >= 0x40 then
-            status_item:add_proto_expert_info(ef_error_status,
-                "Error: " .. (STATUS_CODES[status_val] or "Unknown"))
-        end
-        subtree:add(f_hdr_count, buffer(15, 1))
-
-        -- Validate expected packet length
-        local expected_len = 16 + (hdr_count * 18)
-        if length < expected_len then
-            subtree:add_proto_expert_info(ef_malformed,
-                string.format("Packet too short: expected %d bytes, got %d", expected_len, length))
-        end
-
-        -- Variable Headers Processing (Section 3)
-        -- Each header is 18 bytes fixed length
-        local offset = 16
-        for i = 1, hdr_count do
-            if offset + 18 > length then
-                subtree:add_proto_expert_info(ef_malformed, "Truncated header " .. i)
-                break
+        if not frame_length then
+            if request_more_data(pinfo, stream_offset) then
+                if #packet_infos > 0 then pinfo.cols.info = table.concat(packet_infos, "; ") end
+                return
             end
-
-            local h_id = buffer(offset, 1):uint()
-            local h_id_str = HEADER_IDS[h_id] or "Unknown"
-            local h_subtree = subtree:add(buffer(offset, 18), "Header " .. i .. ": " .. h_id_str)
-
-            h_subtree:add(f_h_id, buffer(offset, 1))
-
-            -- Decode Attribute and Info based on Header ID
-            if h_id == 1 or h_id == 2 then
-                -- Password / New-Password: attribute indicates encoding
-                h_subtree:add(f_h_pwd_attr, buffer(offset + 1, 1))
-                h_subtree:add(f_h_info_str, buffer(offset + 2, 16))
-            elseif h_id == 3 then
-                -- Projector-Name: attribute indicates encoding
-                h_subtree:add(f_h_name_attr, buffer(offset + 1, 1))
-                h_subtree:add(f_h_info_str, buffer(offset + 2, 16))
-            elseif h_id == 4 then
-                -- IM-Type: info is all 0x00 per spec
-                h_subtree:add(f_h_im_type, buffer(offset + 1, 1))
-                h_subtree:add(f_h_info_raw, buffer(offset + 2, 16))
-            elseif h_id == 5 then
-                -- Projector-Command-Type: info is all 0x00 per spec
-                h_subtree:add(f_h_cmd_type, buffer(offset + 1, 1))
-                h_subtree:add(f_h_info_raw, buffer(offset + 2, 16))
-            else
-                h_subtree:add(f_h_attr, buffer(offset + 1, 1))
-                h_subtree:add(f_h_info_str, buffer(offset + 2, 16))
-            end
-
-            offset = offset + 18
+            local item = tree:add(p_escvpnet, buffer(stream_offset, length - stream_offset),
+                "Incomplete ESC/VP21 Stream Data")
+            add_malformed(item, "ESC/VP21 data does not contain its complete terminator")
+            return
         end
-        return
+
+        local frame_buffer = buffer(stream_offset, frame_length)
+        local frame_data = frame_buffer:string()
+        dissect_vp21_frame(frame_buffer, frame_data, pinfo, tree)
+        stream_offset = stream_offset + frame_length
     end
 
-    -- B. ASCII SESSION DETECTION (ESC/VP21)
-    -- After a CONNECT success, the TCP connection carries ESC/VP21 ASCII commands.
-    -- Set:      "CMD PARAM\r"          (step: INC/DEC/INIT instead of PARAM)
-    -- Get:      "CMD?\r"
-    -- Response: "CMD=VALUE\r:"         (colon terminates every response, section 1.3)
-    -- Empty:    ":"                    (ACK with no data)
-    -- Error:    "ERR\r:"              (invalid command received, section 1.4)
-
-    local content_raw = buffer():string()
-    local content_clean = content_raw:gsub("[\r\n]", "")
-
-    local subtree = tree:add(p_escvpnet, buffer(), "Epson ESC/VP21 Session")
-    subtree:add(f_vp21_raw, buffer(), content_clean)
-
-    -- ACK prompt from projector
-    if content_clean == ":" then
-        pinfo.cols.info = "ESC/VP21 ACK (:)"
-        subtree:add(f_vp21_type, buffer(), "ACK")
-        return
-    end
-
-    -- Query response: "CMD=VALUE" or "CMD=VALUE:" (from projector, src port 3629)
-    -- Responses are terminated with \r: per spec (section 1.3); strip trailing colon.
-    local resp_cmd, resp_val = content_clean:match("^(%u+)%s*=%s*(.-):?$")
-    if resp_val == "" then resp_cmd = nil end  -- guard against bare "CMD:"
-
-    -- Error response from projector: bare "ERR" or "ERR:" (section 1.4)
-    -- Must be checked AFTER response pattern so "ERR=00" is parsed as a response.
-    if not resp_cmd and content_clean:match("^ERR:?$") then
-        pinfo.cols.info = "ESC/VP21 ERROR"
-        subtree:add(f_vp21_type, buffer(), "Error")
-        return
-    end
-    if resp_cmd and pinfo.src_port == 3629 and VP21_COMMANDS[resp_cmd] then
-        local cmd_desc = VP21_COMMANDS[resp_cmd] or resp_cmd
-        local decoded = decode_vp21_param(resp_cmd, resp_val)
-        local info = "ESC/VP21 Response: " .. cmd_desc .. " = " .. resp_val
-        if decoded then info = info .. " (" .. decoded .. ")" end
-        pinfo.cols.info = info
-
-        subtree:add(f_vp21_type,     buffer(), "Query Response")
-        subtree:add(f_vp21_cmd,      buffer(), resp_cmd)
-        subtree:add(f_vp21_cmd_desc, buffer(), cmd_desc)
-        subtree:add(f_vp21_param,    buffer(), resp_val)
-        if decoded then
-            subtree:add(f_vp21_decoded, buffer(), decoded)
-        end
-        return
-    end
-
-    -- Get command: "CMD?" (from client)
-    local query_cmd = content_clean:match("^(%u+)%?$")
-    if query_cmd and VP21_COMMANDS[query_cmd] then
-        local cmd_desc = VP21_COMMANDS[query_cmd] or query_cmd
-        pinfo.cols.info = "ESC/VP21 Query: " .. cmd_desc
-
-        subtree:add(f_vp21_type,     buffer(), "Get (Query)")
-        subtree:add(f_vp21_cmd,      buffer(), query_cmd)
-        subtree:add(f_vp21_cmd_desc, buffer(), cmd_desc)
-        return
-    end
-
-    -- Set command: "CMD PARAM" (from client)
-    local set_cmd, set_param = content_clean:match("^(%u+)%s+(.+)$")
-    if set_cmd and VP21_COMMANDS[set_cmd] then
-        local cmd_desc = VP21_COMMANDS[set_cmd] or set_cmd
-        local decoded = decode_vp21_param(set_cmd, set_param)
-        local info = "ESC/VP21 Set: " .. cmd_desc .. " " .. set_param
-        if decoded then info = info .. " (" .. decoded .. ")" end
-        pinfo.cols.info = info
-
-        subtree:add(f_vp21_type,     buffer(), "Set Command")
-        subtree:add(f_vp21_cmd,      buffer(), set_cmd)
-        subtree:add(f_vp21_cmd_desc, buffer(), cmd_desc)
-        subtree:add(f_vp21_param,    buffer(), set_param)
-        if decoded then
-            subtree:add(f_vp21_decoded, buffer(), decoded)
-        end
-        return
-    end
-
-    -- Fallback: unrecognized ASCII data
-    if pinfo.src_port == 3629 then
-        pinfo.cols.info = "ESC/VP21 Unknown Response: " .. content_clean
-        subtree:add(f_vp21_type, buffer(), "Response (Unknown)")
-    else
-        pinfo.cols.info = "ESC/VP21 Unknown Command: " .. content_clean
-        subtree:add(f_vp21_type, buffer(), "Command (Unknown)")
+    if #packet_infos > 0 then
+        pinfo.cols.info = table.concat(packet_infos, "; ") .. "; " .. pinfo.cols.info
     end
 end
 
