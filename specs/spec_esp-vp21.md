@@ -120,3 +120,22 @@ The Range of step parameters is model dependent.
 | NWESSDISP? | ESSID display | `NWESSDISP=01:` | Single decimal value; `01` observed when ESSID display is enabled | Unknown – full value range unclear |
 | VER? | Firmware version | `VER=3X011864JFWWV116VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----VER=----:` | First token before repeated `VER=----` fillers is the active firmware version string; remaining slots appear to represent unpopulated firmware banks | Unknown – number of slots and slot meaning unclear |
 | LAMPS? | Light source usage hours | `LAMPS=0 28 0 0:` | Space-separated pairs per light source: `<normal_hours> <eco_hours>` (two light sources → four values total) | Unknown – field count may vary by model |
+
+### 2.5 Target-specific read-only results in standby
+
+On 2026-11-02, the configured projector was queried through an authenticated V2 session while reporting
+`PWR=04` (Standby, Network on). No set commands were sent. The following queries returned a normal command/value
+response:
+
+`PWR?`, `LAMP?`, `ONTIME?`, `PWSTATUS?`, `VER?`
+
+The following queries returned the protocol's `ERR\r:` invalid/unavailable-command response:
+
+`SIGNAL?`, `ERR?`, `SOURCE?`, `SOURCELIST?`, `AUDIO?`, `ASPECT?`, `CMODE?`, `LUMINANCE?`, `LUMCONST?`, `MUTE?`,
+`MSEL?`, `FREEZE?`, `AUTOKEYSTONE?`, `HREVERSE?`, `VREVERSE?`, `ZOOM?`, `FILTER?`, `FLWARNING?`, `CCAP?`,
+`LAMPS?`
+
+These are observations for this model/firmware in its tested standby state, not changes to the general command
+definitions above. An `ERR` response does not distinguish an unsupported command from one unavailable in the
+current state. Identifying and network-configuration queries were intentionally excluded, so this check makes no
+claim about their availability.

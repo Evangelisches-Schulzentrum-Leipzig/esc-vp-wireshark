@@ -4,17 +4,15 @@
 ASCII command language carried after a successful connection is specified separately in
 [spec_esp-vp21.md](spec_esp-vp21.md).
 
-**Evidence:** this document combines the existing Epson protocol reference, the root JavaScript client, captured
-client logs supplied with this update, and the iProjection reverse-engineering notes in
-[03-control-protocol.md](../docs/iprojection-protocol/03-control-protocol.md). The base framing and V1 flow are
-well-supported. V2 digest framing is supported by the decompile notes and the current client implementation, but
-there is no successful V2 hardware exchange in the supplied logs. Conflicts are called out rather than silently
-resolved. This is an independent, community-maintained specification, not an Epson publication.
+This independent, community-maintained specification describes ESC/VP.net packet formats and session behavior.
+Protocol details are based on the Epson reference and the
+[iProjection control-protocol notes](../docs/iprojection-protocol/03-control-protocol.md); unspecified or
+inferred behavior is identified as such.
 
 ## 1. Overview
 
 ESC/VP.net is the binary control/session protocol. It negotiates a connection and, for TCP sessions, carries
-ESC/VP21 ASCII commands over the same connection. The root client uses TCP port **3629**. The documented
+ESC/VP21 ASCII commands over the same connection. TCP control sessions use port **3629**. The documented
 session-less HELLO exchange also uses UDP port **3629**.
 
 Two version values are relevant:
@@ -22,12 +20,11 @@ Two version values are relevant:
 | Wire version | Label used here | Summary |
 |---|---|---|
 | `0x10` | V1 (1.0) | Plain-password CONNECT, followed by an ESC/VP21 command session. |
-| `0x20` | V2 (2.0) | Challenge-based digest authentication is attempted by the current root client. |
+| `0x20` | V2 (2.0) | Challenge-based digest authentication. |
 
 The original reference describes the version octet as a packed value whose high nibble is the major version and
-low nibble is the minor version: `0x10` is version 1.0 and `0x20` is version 2.0. Do not assume a projector
-supports V2 because it accepts a V1 connection. The supplied client log shows a `0x20` request receiving status
-`0x55` (unsupported version), followed by successful V1 password authentication.
+low nibble is the minor version: `0x10` is version 1.0 and `0x20` is version 2.0. Support is firmware-dependent;
+acceptance of one version does not prove support for the other.
 
 ## 2. Common packet format
 
@@ -65,7 +62,7 @@ data; a TCP read is not guaranteed to match a packet boundary.
 
 ### 2.2 Response status values
 
-The status byte is at offset 14. These meanings are documented or observed:
+The status byte is at offset 14:
 
 | Status | Name | Meaning |
 |---:|---|---|
@@ -118,10 +115,9 @@ The legacy reference assigns these values to the IM-Type header's attribute:
 
 ### 4.1 UDP HELLO
 
-The documented discovery request is a V1 HELLO packet (`version=0x10`, `type=0x01`, `status=0`, no headers) sent
-to the broadcast address on UDP port 3629. A successful response may include projector-name, IM-Type, and
+The discovery request is a V1 HELLO packet (`version=0x10`, `type=0x01`, `status=0`, no headers) sent to the
+broadcast address on UDP port 3629. A successful response may include projector-name, IM-Type, and
 projector-command-type headers.
-The root `emulate.js` implements this V1 shape; its V2 behavior is not a discovery reference.
 
 ### 4.2 TCP CONNECT
 
@@ -182,9 +178,8 @@ offset 16..33: 01 01 <16-byte password field>
 ```
 
 The fields are `version=0x10`, `type=0x03`, reserved=`0`, request status=`0`, header count=`1`, header ID=`0x01`,
-and attribute=`0x01`. The legacy reference specifies a printable US-ASCII password. A shorter value is carried
-in the fixed 16-byte field; the current root client NUL-pads the field. Behavior for values longer than 16 bytes
-is implementation-dependent.
+and attribute=`0x01`. The legacy reference specifies a printable US-ASCII password. A shorter value is
+NUL-padded in the fixed 16-byte field. Behavior for values longer than 16 bytes is implementation-dependent.
 
 Successful CONNECT response:
 
@@ -244,7 +239,7 @@ The password is not sent as a plain-text field in this exchange.
 
 ### 7.1 Challenge request
 
-The current root client starts with a 34-byte CONNECT request:
+The V2 CONNECT challenge request is 34 bytes:
 
 ```text
 "ESC/VP.net" 20 03 00 00 00 01 | 01 03 | 16 zero bytes
@@ -253,11 +248,8 @@ The current root client starts with a 34-byte CONNECT request:
 This is `version=0x20`, `type=0x03`, one Password header (`id=0x01`, `attribute=0x03`) whose 16-byte value is
 zero-filled.
 
-The expected challenge response has status `0x41` and a 16-byte nonce at packet offsets 18-33. The root client
-expects a response header with version `0x10` and type `0x03`; the decompile notes identify the status and nonce
-but do not independently settle every response-header field. A `0x20` status is treated by the current client as
-an unauthenticated projector and uses an all-zero nonce and empty password in the digest calculation. A `0x55`
-status indicates that V2 is unsupported and the client may retry with V1.
+The challenge response uses version `0x20`, type `0x03`, and status `0x41`; its 16-byte nonce occupies packet
+offsets 18-33. A `0x55` status indicates that V2 is unsupported.
 
 ### 7.2 Digest calculation and proof
 
@@ -281,49 +273,29 @@ two 18-byte headers. A response status of `0x20` indicates that authentication s
 an authentication or request failure. After successful authentication, send ESC/VP21 command bytes on the same
 TCP connection.
 
-### 7.3 Evidence discrepancy: proof version byte
+## 8. Session conformance
 
-The V2 challenge request version (`0x20`), digest formula, and proof attributes (`0x04`/`0x05`) agree between the
-current root `http-client.js` and the iProjection reverse-engineering notes. The proof request's version byte does
-not:
+A receiver MUST parse the complete 16-byte common header before interpreting its status. If the header count is
+nonzero, the receiver MUST also read the declared 18-byte headers before processing their contents.
 
-* The decompile-derived sequence in `docs/iprojection-protocol/03-control-protocol.md` shows `0x20` for the
-  52-byte proof.
-* The current root `http-client.js` constructs that proof with version `0x10`.
-* The supplied hardware log did not complete V2 authentication: the tested projector returned `0x55`, and the
-  client fell back to V1.
+After a V2 challenge response with status `0x41`, the client MUST read the complete challenge, compute the
+SHA-256 proof, and send both digest headers. A rejected TCP request terminates that session; a subsequent
+connection uses a new TCP socket. Status `0x55` indicates that the requested version is unsupported.
 
-Therefore the correct proof version byte remains unresolved pending a successful V2 capture or hardware test.
-Implementations should not infer that the two encodings are interchangeable.
-
-The separate root `index.js` experiment starts with a V2 HELLO (`type=0x01`) and uses MD5 over
-`username:password`; `emulate.js` accepts an MD5 header without validating it. Neither establishes the
-projector's V2 digest algorithm; they conflict with the V2 CONNECT challenge (`type=0x03`) and SHA-256 formula
-implemented in `http-client.js` and described by the iProjection decompile notes. Treat those paths as
-experiments, not protocol requirements.
-
-## 8. Recommended client behavior
-
-1. Connect to TCP 3629 and attempt V2 only when desired/supported by the target.
-2. Parse the complete 16-byte response header before inspecting status or reading challenge bytes.
-3. If status is `0x41`, read the complete challenge, compute the SHA-256 response, and send both digest headers.
-4. If the V2 request returns `0x55`, close that socket before opening a fresh V1 connection. Do not reuse a
-   rejected connection for fallback.
-5. On V1 success, or V2 proof success, send ESC/VP21 ASCII commands terminated by carriage return (`0x0D`).
-6. For command replies, read through the ESC/VP21 response terminator (`0x0D 0x3A`), not just one TCP data event.
+After a successful CONNECT response (`status=0x20`), ESC/VP21 command lines are ASCII and end with carriage
+return (`0x0D`). Responses end with `0x0D 0x3A`. TCP does not preserve message boundaries, so receivers MUST
+buffer data through the complete response terminator.
 
 ## 9. Security and compatibility notes
 
 * V1 sends a plain password in a fixed-width field. Use it only on a trusted network.
 * V2's challenge-response avoids sending the password as clear text, but does not encrypt subsequent commands or
   replace transport-layer protection.
-* Do not log passwords, password-derived hashes, or reusable authentication material in production.
-* Support is projector/firmware-dependent. `0x55` is a version negotiation result, not a password failure.
+* Version support is projector/firmware-dependent. Status `0x55` identifies an unsupported version, not an
+  authentication failure.
 * See [spec_esp-vp21.md](spec_esp-vp21.md) for command grammar and common command values.
 
 ## 10. References
 
 * Epson ESC/VP.net reference PDF, Revision F: [../docs/1050273.pdf](../docs/1050273.pdf) ([source link](https://ia601808.us.archive.org/8/items/manualzz-id-1050273/1050273.pdf)).
 * iProjection reverse-engineering notes: [03-control-protocol.md](../docs/iprojection-protocol/03-control-protocol.md).
-* Root implementation: `http-client.js` (V1 and SHA-256 challenge-response); `index.js` and `emulate.js` contain
-  separate experimental MD5 code and are not normative.
