@@ -1,275 +1,329 @@
 # ESC/VP.net Protocol Specification
-Link: https://ia601808.us.archive.org/8/items/manualzz-id-1050273/1050273.pdf
-Revision: F
+
+**Scope:** binary ESC/VP.net framing, connection setup, and authentication for projector control on port 3629. The
+ASCII command language carried after a successful connection is specified separately in
+[spec_esp-vp21.md](spec_esp-vp21.md).
+
+**Evidence:** this document combines the existing Epson protocol reference, the root JavaScript client, captured
+client logs supplied with this update, and the iProjection reverse-engineering notes in
+[03-control-protocol.md](../docs/iprojection-protocol/03-control-protocol.md). The base framing and V1 flow are
+well-supported. V2 digest framing is supported by the decompile notes and the current client implementation, but
+there is no successful V2 hardware exchange in the supplied logs. Conflicts are called out rather than silently
+resolved. This is an independent, community-maintained specification, not an Epson publication.
+
 ## 1. Overview
-The ESC/VP.net protocol manages communication between a client (PC) and a server (Projector) over a network. It supports two modes of operation:
 
-1. **Session-less Mode**: Uses **UDP** for device discovery and status checks.
-2. **Session Mode**: Uses **TCP** for authentication and establishing a bidirectional command session.
+ESC/VP.net is the binary control/session protocol. It negotiates a connection and, for TCP sessions, carries
+ESC/VP21 ASCII commands over the same connection. The root client uses TCP port **3629**. The documented
+session-less HELLO exchange also uses UDP port **3629**.
 
-## 2. Packet Format
+Two version values are relevant:
 
-### 2.1 Common Request and Response Format
-The protocol uses a fixed **16-byte common part**.
+| Wire version | Label used here | Summary |
+|---|---|---|
+| `0x10` | V1 (1.0) | Plain-password CONNECT, followed by an ESC/VP21 command session. |
+| `0x20` | V2 (2.0) | Challenge-based digest authentication is attempted by the current root client. |
 
-| Byte Length | Type   | Value                                     | Meaning                                      |
-| ----------- | ------ | ----------------------------------------- | -------------------------------------------- |
-| 10          | STR    | `"ESC/VP.net"`                            | Protocol identifier                          |
-| 1           | BYTE   | `0x10`                                    | Version identifier (High 4 bits: Major, Low 4 bits: Minor) |
-| 1           | UCHAR  | `0..3`                                    | Type identifier: 0: NULL, 1: HELLO, 2: PASSWORD, 3: CONNECT |
-| 2           | USHORT | `0x0000`                                  | Reserved for sequence number (Always 0)     |
-| 1           | BYTE   | `0x00` / Status                           | Request: Always `0x00`. Response: Status code |
-| 1           | UCHAR  | `0..N`                                    | Number of headers following                 |
+The original reference describes the version octet as a packed value whose high nibble is the major version and
+low nibble is the minor version: `0x10` is version 1.0 and `0x20` is version 2.0. Do not assume a projector
+supports V2 because it accepts a V1 connection. The supplied client log shows a `0x20` request receiving status
+`0x55` (unsupported version), followed by successful V1 password authentication.
 
-### 2.2 Status Codes (15th Byte)
-Used in response packets to indicate the result of a request.
+## 2. Common packet format
 
-| Code   | Status                         | Meaning                                      |
-| ------ | ------------------------------ | -------------------------------------------- |
-| `0x20` | OK                             | Normal termination                           |
-| `0x40` | Bad Request                    | Grammar error or illegal data                |
-| `0x41` | Unauthorized                   | Password required/not provided               |
-| `0x43` | Forbidden                      | Password is wrong                            |
-| `0x45` | Request Not Allowed            | Disallowed type request for the current mode |
-| `0x53` | Service Unavailable            | Projector is BUSY                            |
-| `0x55` | Version Not Supported          | Unsupported protocol version                 |
+Every ESC/VP.net control packet starts with a 16-byte common header. Optional fixed-size headers follow it.
 
-## 3. Headers
-Headers follow the 16-byte common part. Each header is a **18-byte fixed length**.
+| Offset | Size | Field | Request value / interpretation |
+|---:|---:|---|---|
+| 0 | 10 | Signature | ASCII `ESC/VP.net` |
+| 10 | 1 | Protocol version | `0x10` or `0x20` |
+| 11 | 1 | Message type | `0` NULL, `1` HELLO, `2` PASSWORD, `3` CONNECT |
+| 12 | 2 | Reserved / sequence-number field | Big-endian `0x0000` |
+| 14 | 1 | Status | `0x00` in a request; response status in a reply |
+| 15 | 1 | Header count | Number of 18-byte headers immediately following |
 
-### 3.1 Header Structure
+Each optional header is 18 bytes:
 
-| Byte Length | Type  | Value              | Meaning            |
-| ----------- | ----- | ------------------ | ------------------ |
-| 1           | UCHAR | `0..5`             | Header identifier  |
-| 1           | UCHAR | `0..255`           | Header attribute value |
-| 16          | STR   | Variable           | Header information |
+| Relative offset | Size | Field |
+|---:|---:|---|
+| 0 | 1 | Header identifier |
+| 1 | 1 | Attribute |
+| 2 | 16 | Header information / value |
 
-### 3.2 Header Identifiers and Attributes
-#### Header Identifier 1: Password / Header Identifier 2: New-Password
-* **Information**: The password string.
-* **Attributes**: 0 = NULL (no password), 1 = Plain (US-ASCII).
+For a packet containing only the common header and these fixed-size headers, its length is
+`16 + (18 * header_count)` bytes. On TCP, read exactly the declared header bytes before parsing the next protocol
+data; a TCP read is not guaranteed to match a packet boundary.
 
-#### Header Identifier 3: Projector-Name
-* **Information**: The projector name string.
-* **Attributes**: 0 = NULL (no projector name), 1 = US-ASCII, 2 = Shift-JIS (Reserved), 3 = EUC-JP (Reserved).
+### 2.1 Message types
 
-#### Header Identifier 4: IM-Type (Projector Model)
-* **Information**: Cannot be described (set all to `0x00`).
-* **Attributes**:
-  * `10-15` (Reserved)
-  * `16-19` Type A
-  * `17-19` (Reserved)
-  * `0C` Type D
-  * `20` Initial model of EMP/PL-735 
-  * `21` Type C, Type E
-  * `22` Type F
-  * `23` Type G
-  * `24-29` (Reserved)
-  * `30` Type B
-  * `31-39` (Reserved)
-  * `40` Type H
-  * `41` Type I
-  * `42` Type J
-  * `43-49` (Reserved)
-  * `50` Type K
-  * `51-59` (Reserved)
+| Type | Name | Use |
+|---:|---|---|
+| `0x00` | NULL | Reserved / no operation. |
+| `0x01` | HELLO | Session-less discovery or capability exchange. V1 UDP HELLO is documented; V2 HELLO is not established by the evidence here. |
+| `0x02` | PASSWORD | Password-presence check, password confirmation, or password change flow. It is not the normal command-session setup. |
+| `0x03` | CONNECT | Starts an ESC/VP21 session. In V2, this type is also used for the digest challenge flow. |
 
-#### Header Identifier 5: Projector-Command-Type
-* **Information**: Cannot be described (set all to `0x00`).
-* **Attributes**: `0x16` = ESC/VP Level 6 (Reserved), `0x21` = ESC/VP21 Ver1.0.
+### 2.2 Response status values
 
-## 4. Communication Modes
-### 4.1 Session-less Mode (UDP)
-Used for device discovery via the **HELLO** request (Type 1).
+The status byte is at offset 14. These meanings are documented or observed:
 
-* **Port**: UDP 3629 (Broadcast address).
+| Status | Name | Meaning |
+|---:|---|---|
+| `0x20` | OK | Request accepted / operation succeeded. |
+| `0x40` | Bad Request | Malformed packet, unsupported header, or invalid field. |
+| `0x41` | Unauthorized | Password is required; in V2 challenge flow this accompanies the challenge. |
+| `0x43` | Forbidden | Password/authentication rejected. |
+| `0x45` | Request Not Allowed | Message type is not allowed in the current transport/mode. |
+| `0x53` | Service Unavailable | Projector is busy or unavailable. |
+| `0x55` | Version Not Supported | Requested protocol version is unsupported. |
 
-### 4.2 Session Mode (TCP)
+After a rejected TCP request, the projector commonly closes the connection after sending the response. A client
+should treat EOF/reset as transport termination, not as a successful response.
 
-Used for establishing a connection for projector commands.
+## 3. Header identifiers and attributes
 
-* **Port**: TCP 3629.
-* **Connection Flow**:
-  1. Client opens TCP connection.
-  2. Client sends `CONNECT` or other request.
-  3. If successful and `CONNECT` request was send, the connection remains open for commands otherwise the **the TCP connection is cut** .
-  4. If an error occurs, the server sends an error status and **cuts the TCP connection**.
+| ID | Name | Attributes / interpretation |
+|---:|---|---|
+| `0x01` | Password | Attribute `0x00`: no password; `0x01`: plain US-ASCII. V2 challenge/proof attributes are detailed in Section 7. |
+| `0x02` | New password | Password-change header. The legacy reference identifies attributes `0x00` (none) and `0x01` (plain US-ASCII). |
+| `0x03` | Projector name | Attribute `0x00`: no name; `0x01`: US-ASCII; `0x02`: Shift-JIS (reserved); `0x03`: EUC-JP (reserved). |
+| `0x04` | IM-Type / model type | Attribute identifies a projector family; information bytes are normally zero-filled. See values below. |
+| `0x05` | Projector command type | Attribute `0x16`: ESC/VP Level 6 (reserved); `0x21`: ESC/VP21 v1.0. |
 
-## 5. Request examples
-### 5.1 PASSWORD Request/Response (Type 2)
-#### 5.1.1 PASSWORD check request
-Request to confirm the presence/absence of password setting
+Each header's information field is exactly 16 bytes. Text fields are normally NUL-padded. The newer V2 attributes
+are described in the authentication section; unrelated attribute values should be treated as unknown, not guessed.
 
-| Byte Length  | Type   | Value          | Meaning            |
-| ------------ | ------ | -------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"` | Protocol identifier |
-| 1            | BYTE   | `0x10`         | Version identifier |
-| 1            | UCHAR  | `2`            | Type identifier: PASSWORD |
-| 2            | USHORT | `0`            | (Reserved) |
-| 1            | BYTE   | `0x00`         | Status code: Always set 0x00 since it is a request. |
-| 1            | UCHAR  | `0`            | Number of headers: 0 |
+The legacy reference assigns these values to the IM-Type header's attribute:
 
-The server returns the status code 0x20 (OK) when the password has not been set, or the status code 0x41 (Unauthorized) when the password has been set. 
+| Attribute | Meaning |
+|---:|---|
+| `0x0C` | Type D |
+| `0x10`-`0x15` | Reserved |
+| `0x16`-`0x19` | Type A (`0x17`-`0x19` are also marked reserved in the reference) |
+| `0x20` | Initial EMP/PL-735 model |
+| `0x21` | Type C / Type E |
+| `0x22` | Type F |
+| `0x23` | Type G |
+| `0x24`-`0x29` | Reserved |
+| `0x30` | Type B |
+| `0x31`-`0x39` | Reserved |
+| `0x40` | Type H |
+| `0x41` | Type I |
+| `0x42` | Type J |
+| `0x43`-`0x49` | Reserved |
+| `0x50` | Type K |
+| `0x51`-`0x59` | Reserved |
 
-#### 5.1.2 PASSWORD confirm request
-Request to confirm the password
+## 4. Transport and session lifecycle
 
-| Byte Length  | Type   | Value           | Meaning            |
-| ------------ | ------ | --------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"`  | Protocol identifier |
-| 1            | BYTE   | `0x10`          | Version identifier |
-| 1            | UCHAR  | `2`             | Type identifier: PASSWORD |
-| 2            | USHORT | `0`             | (Reserved) |
-| 1            | BYTE   | `0x00`          | Status code: Always set 0x00 since it is a request. |
-| 1            | UCHAR  | `1`             | Number of headers: 1 |
-| 1            | UCHAR  | `1`             | Header 1 identifier: Password |
-| 1            | UCHAR  | `1`             | Header 1 attribute value: Plain |
-| 16           | STR    | `"AbCdEfGhIjk"` | Header 1 information: Password character string |
+### 4.1 UDP HELLO
 
-The server returns the status code 0x20 (OK) when the password is correct, or the status code 0x43 (Forbidden) when the password is wrong. 
+The documented discovery request is a V1 HELLO packet (`version=0x10`, `type=0x01`, `status=0`, no headers) sent
+to the broadcast address on UDP port 3629. A successful response may include projector-name, IM-Type, and
+projector-command-type headers.
+The root `emulate.js` implements this V1 shape; its V2 behavior is not a discovery reference.
 
-#### 5.1.3 PASSWORD success response
-Response to a success in password confirmation or change.
-After the following datagram is sent, the TCP connection is cut off. 
+### 4.2 TCP CONNECT
 
-| Byte Length  | Type   | Value          | Meaning            |
-| ------------ | ------ | -------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"` | Protocol identifier |
-| 1            | BYTE   | `0x10`         | Version identifier |
-| 1            | UCHAR  | `2`            | Type identifier: PASSWORD |
-| 2            | USHORT | `0`            | (Reserved) |
-| 1            | BYTE   | `0x20`         | Status code: OK |
-| 1            | UCHAR  | `0`            | Number of headers: 0 |
+For command control, connect to TCP port 3629 and exchange ESC/VP.net packets. A successful CONNECT response
+(`status=0x20`) leaves the TCP connection open; ESC/VP21 command bytes then travel directly over that connection.
+The connection ends when either endpoint closes it. PASSWORD checks and failed CONNECT attempts are separate
+transactions and normally end after their response.
 
-#### 5.1.3 PASSWORD failure response
-Response to a failure due to an authentication error
-After the following datagram is sent, the TCP connection is cut off. 
+## 5. V1 (version `0x10`) password and CONNECT flow
 
-| Byte Length  | Type   | Value          | Meaning            |
-| ------------ | ------ | -------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"` | Protocol identifier |
-| 1            | BYTE   | `0x10`         | Version identifier |
-| 1            | UCHAR  | `2`            | Type identifier: PASSWORD |
-| 2            | USHORT | `0`            | (Reserved) |
-| 1            | BYTE   | `0x43`         | Status code: Forbidden |
-| 1            | UCHAR  | `0`            | Number of headers: 0 |
+V1 places a 16-byte plain password value in a Password header. The password is therefore visible to a passive
+observer on the local network; this protocol layer does not provide TLS.
 
-### 5.2 CONNECT Request/Response (Type 3)
-#### 5.2.1 CONNECT Request without password
-Request not to use the password
+### 5.1 PASSWORD message (type `0x02`)
 
-| Byte Length  | Type   | Value          | Meaning            |
-| ------------ | ------ | -------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"` | Protocol identifier |
-| 1            | BYTE   | `0x10`         | Version identifier |
-| 1            | UCHAR  | `3`            | Type identifier: CONNECT |
-| 2            | USHORT | `0`            | (Reserved) |
-| 1            | BYTE   | `0x00`         | Status code: Always set 0x00 since it is a request. |
-| 1            | UCHAR  | `0`            | Number of headers: 0 |
+A PASSWORD request checks whether a password is configured or confirms a password. It does **not** establish the
+long-lived ESC/VP21 command session. The projector sends a response and then closes the TCP connection.
 
-#### 5.2.2 CONNECT Request with password
-Request to use the password
+Password-presence check (no headers):
 
-| Byte Length  | Type   | Value           | Meaning            |
-| ------------ | ------ | --------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"`  | Protocol identifier |
-| 1            | BYTE   | `0x10`          | Version identifier |
-| 1            | UCHAR  | `3`             | Type identifier: CONNECT |
-| 2            | USHORT | `0`             | (Reserved) |
-| 1            | BYTE   | `0x00`          | Status code: Always set 0x00 since it is a request. |
-| 1            | UCHAR  | `1`             | Number of headers: 1 |
-| 1            | UCHAR  | `1`             | Header 1 identifier: Password |
-| 1            | UCHAR  | `1`             | Header 1 attribute value: Plain |
-| 16           | STR    | `"AbCdEfGhIjk"` | Header 1 information: Password character string |
+```text
+"ESC/VP.net" 10 02 00 00 00 00
+```
 
-#### 5.2.3 CONNECT success response 
-Response to a success in session start
-After the following datagram is sent, the bidirectional session of ESC/VP21 starts with the TCP connection maintained. 
+The response status is `0x20` if no password is configured, or `0x41` if one is configured.
 
-| Byte Length  | Type   | Value          | Meaning            |
-| ------------ | ------ | -------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"` | Protocol identifier |
-| 1            | BYTE   | `0x10`         | Version identifier |
-| 1            | UCHAR  | `3`            | Type identifier: CONNECT |
-| 2            | USHORT | `0`            | (Reserved) |
-| 1            | BYTE   | `0x20`         | Status code: OK |
-| 1            | UCHAR  | `0`            | Number of headers: 0 |
+Password confirmation:
 
-After the bidirectional session has started, the ESC/VP21 commands are transferred directly since direct communication is 
-made with the projector. 
-The bidirectional session is continued until the TCP connection is cut off from either the server or client.
+```text
+"ESC/VP.net" 10 02 00 00 00 01 | 01 01 | "AbCdEfGhIjk" + NUL padding to 16 bytes
+```
 
-#### 5.2.4 CONNECT busy response 
-Response to a failure in connection due to a BUSY status
-After the following datagram is sent, the TCP connection is closed. 
+The response is `0x20` for a correct password or `0x43` for an incorrect password. A configured password omitted
+from the request produces `0x41`. If no password is configured, a supplied password is ignored. A New-Password
+header (`id=0x02`) is defined for password-change operations; the complete change procedure is not specified here.
+These PASSWORD replies have no headers and use the same common response shape:
 
-| Byte Length  | Type   | Value          | Meaning            |
-| ------------ | ------ | -------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"` | Protocol identifier |
-| 1            | BYTE   | `0x10`         | Version identifier |
-| 1            | UCHAR  | `3`            | Type identifier: CONNECT |
-| 2            | USHORT | `0`            | (Reserved) |
-| 1            | BYTE   | `0x53`         | Status code: Service Unavailable |
-| 1            | UCHAR  | `0`            | Number of headers: 0 |
+```text
+"ESC/VP.net" 10 02 00 00 <status> 00
+```
 
-#### 5.2.4 CONNECT password required response 
-Response to the necessity of a password
-After the following datagram is sent, the TCP connection is closed. 
+`<status>` is `0x20` (accepted), `0x41` (password required), `0x43` (incorrect password), or `0x53` (busy), as
+applicable.
 
-| Byte Length  | Type   | Value          | Meaning            |
-| ------------ | ------ | -------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"` | Protocol identifier |
-| 1            | BYTE   | `0x10`         | Version identifier |
-| 1            | UCHAR  | `3`            | Type identifier: CONNECT |
-| 2            | USHORT | `0`            | (Reserved) |
-| 1            | BYTE   | `0x41`         | Status code: Unauthorized |
-| 1            | UCHAR  | `0`            | Number of headers: 0 |
+### 5.2 CONNECT message (type `0x03`)
 
-#### 5.2.4 CONNECT wrong password response 
-Response to a wrong password
-After the following datagram is sent, the TCP connection is closed. 
+CONNECT without a password header is:
 
-| Byte Length  | Type   | Value          | Meaning            |
-| ------------ | ------ | -------------- | ------------------ |
-| 10           | STR    | `"ESP/VP.net"` | Protocol identifier |
-| 1            | BYTE   | `0x10`         | Version identifier |
-| 1            | UCHAR  | `3`            | Type identifier: CONNECT |
-| 2            | USHORT | `0`            | (Reserved) |
-| 1            | BYTE   | `0x43`         | Status code: Forbidden |
-| 1            | UCHAR  | `0`            | Number of headers: 0 |
+```text
+"ESC/VP.net" 10 03 00 00 00 00
+```
 
-## 6. Errors
-### 6.1 Common erros
-| Error Definition | Processing Method |
-| ----------------------------- | -- |
-| Request data is illegal.<ul><li>Protocol identifier is not "ESC/VP.net". </li><li>Type identifier is outside the defined range. </li><li>Status code is not 0x00. </li><li>Sequence number (reserved area) is not 0. </li><li>Header identifier is outside the defined range. </li><li>Header attribute value is outside the defined range. </li><li>Version identifier is not 0x10.</li></ul> | The server returns the error code 0x40 (Bad Request) in a response. After that, in the case of the session mode, the server cuts off the TCP connection and waits for the next request. |
-| Version identifier is not 0x10. | The server returns the error code 0x55 (Protocol Version Not Supported) in a response. After that, in the case of the session mode, the server cuts off the TCP connection and waits for the next request. |
-### 6.2 UDP (session-less mode) Specific Errors 
-| Error Definition | Processing Method |
-| -- | -- |
-| Type identifier is not 1 (HELLO). | The server returns the error code 0x45 (Request not allowed) in a response. |
-### 6.3 TCP (session mode) Specific Errors 
-| Error Definition | Processing Method |
-| -- | -- |
-| Type identifier is not 2 (PASSWORD) or 3 (CONNECT). | The server returns the error code 0x45 (Request not allowed) in a response. After that, the server cuts off the TCP connection and waits for the next request. |
-### 6.4 HELLO Message Specific Errors 
-| Error Definition | Processing Method |
-| -- | -- |
-| In spite of the HELLO request, the request header is used. | The server returns the error code 0x40 (Bad Request) in a response. |
-### 6.5 PASSWORD Message Specific Errors 
-| Error Definition | Processing Method |
-| -- | -- |
-| In spite of the PASSWORD request, the header other than Password/New-Password is used. <hr> The password or new password includes any character that cannot be printed or that deviates from the US-ASCII code. (0-31 and 127 or more) <hr> Though the Password/New-Password header identifier is not NULL, the password is a blank character string. | The server returns the error code 0x40 (Bad Request) in a response, cuts off the TCP connection, and waits for the next request. |
-| Though the password is set to the server, the password is not included in the request. | The server returns the error code 0x41 (Unauthorized) in a response, cuts off the TCP connection, and waits for the next request. |
-| Though the password is not set to the server, the password is included in the request. | The server ignores the password in the request. An error does not occur. |
-| The password set to the server differs from the password included in the request. | The server returns the error code 0x43 (Forbidden) in a response, cuts off the TCP connection, and waits for the next request. | 
-| The server cannot respond immediately since it is processing the other request, for example. | The server returns the error code 0x53 (Service Unavailable) in a response, cuts off the TCP connection, and waits for the next request. |
-### 6.4 CONNECT Message Specific Errors 
-| Error Definition | Processing Method |
-| -- | -- |
-| Though the password is set to the server, the password is not included in the request. | The server returns the error code 0x41 (Unauthorized) in a response, cuts off the TCP connection, and waits for the next request. |
-| Though the password is not set to the server, the password is included in the request. | The server ignores the password in the request. An error does not occur. |
-| The password set to the server differs from the password included in the request. | The server returns the error code 0x43 (Forbidden) in a response, cuts off the TCP connection, and waits for the next request. | 
-| The server cannot respond immediately since it is processing the other request, for example. | The server returns the error code 0x53 (Service Unavailable) in a response, cuts off the TCP connection, and waits for the next request. |
-| The server cannot respond immediately since it is processing the other request, for example. <hr> The server cannot start a new ESC/VP21 bidirectional session. | The server returns the error code 0x53 (Service Unavailable) in a response, cuts off the TCP connection, and waits for the next request. |  
+It succeeds when no password is configured. For a password-protected projector, include one Password header:
+
+```text
+offset 0..15:  "ESC/VP.net" 10 03 00 00 00 01
+offset 16..33: 01 01 <16-byte password field>
+```
+
+The fields are `version=0x10`, `type=0x03`, reserved=`0`, request status=`0`, header count=`1`, header ID=`0x01`,
+and attribute=`0x01`. The legacy reference specifies a printable US-ASCII password. A shorter value is carried
+in the fixed 16-byte field; the current root client NUL-pads the field. Behavior for values longer than 16 bytes
+is implementation-dependent.
+
+Successful CONNECT response:
+
+```text
+"ESC/VP.net" 10 03 00 00 20 00
+```
+
+This 16-byte response (`status=0x20`, no headers) starts the bidirectional ESC/VP21 session. The TCP connection
+remains open until either endpoint closes it; ESC/VP21 commands are sent directly over the stream.
+CONNECT failure replies use the same 16-byte shape with `type=0x03` and no headers:
+
+```text
+"ESC/VP.net" 10 03 00 00 <status> 00
+```
+
+The status is `0x41` when a configured password is missing, `0x43` for an incorrect password, and `0x53` when
+the projector is busy or cannot start a session. Unlike an accepted CONNECT, each failure response is followed
+by TCP connection closure.
+
+| Response status | Result |
+|---:|---|
+| `0x20` | CONNECT accepted; keep the TCP session open and send ESC/VP21 commands. |
+| `0x41` | Password required but omitted. |
+| `0x43` | Supplied password is incorrect. |
+| `0x53` | Projector is busy or cannot start a new ESC/VP21 session. |
+
+If a password is supplied when none is configured, the legacy reference says it is ignored. Authentication
+failures and busy responses close the TCP connection after the response.
+
+## 6. V1 validation and transport-specific errors
+
+The original reference describes V1 as accepting version `0x10`. V2 behavior is covered separately below; older
+projectors may reject a version `0x20` request with `0x55`.
+
+| Condition | Response / behavior |
+|---|---|
+| Invalid signature, type outside `0..3`, nonzero request status/reserved field, invalid header ID/attribute, or other malformed V1 request | `0x40` Bad Request. In TCP session mode, close the connection after the response. |
+| Unsupported version | `0x55` Version Not Supported; in TCP mode, close the connection. |
+| UDP request type is not HELLO (`0x01`) | `0x45` Request Not Allowed. |
+| TCP request type is neither PASSWORD (`0x02`) nor CONNECT (`0x03`) | `0x45` Request Not Allowed, then close the connection. |
+| HELLO contains headers | `0x40` Bad Request. |
+| PASSWORD uses a header other than Password/New-Password, or the password is blank, non-printable, or outside US-ASCII | `0x40` Bad Request, then close the connection. |
+| PASSWORD omits a configured password | `0x41` Unauthorized, then close the connection. |
+| PASSWORD includes an incorrect configured password | `0x43` Forbidden, then close the connection. |
+| Projector is busy while processing PASSWORD or CONNECT | `0x53` Service Unavailable, then close the connection. |
+| CONNECT omits a configured password | `0x41` Unauthorized, then close the connection. |
+| CONNECT includes an incorrect configured password | `0x43` Forbidden, then close the connection. |
+| CONNECT cannot start another ESC/VP21 session | `0x53` Service Unavailable, then close the connection. |
+
+The legacy reference also states that a password supplied when no password is set is ignored. Exact validation and
+connection-close behavior can vary by projector firmware; the table records the documented V1 behavior.
+
+## 7. V2 (version `0x20`) digest authentication
+
+V2 uses a challenge and a SHA-256 response. It is a proprietary ESC/VP.net digest scheme, not HTTP Digest.
+The password is not sent as a plain-text field in this exchange.
+
+### 7.1 Challenge request
+
+The current root client starts with a 34-byte CONNECT request:
+
+```text
+"ESC/VP.net" 20 03 00 00 00 01 | 01 03 | 16 zero bytes
+```
+
+This is `version=0x20`, `type=0x03`, one Password header (`id=0x01`, `attribute=0x03`) whose 16-byte value is
+zero-filled.
+
+The expected challenge response has status `0x41` and a 16-byte nonce at packet offsets 18-33. The root client
+expects a response header with version `0x10` and type `0x03`; the decompile notes identify the status and nonce
+but do not independently settle every response-header field. A `0x20` status is treated by the current client as
+an unauthenticated projector and uses an all-zero nonce and empty password in the digest calculation. A `0x55`
+status indicates that V2 is unsupported and the client may retry with V1.
+
+### 7.2 Digest calculation and proof
+
+Let `password` be the configured password and `nonce` the 16 raw challenge bytes:
+
+```text
+nonceHex = lowercase hexadecimal encoding of nonce
+passwordHashHex = lowercase hex(SHA256(UTF8("ESC/VP.net:" + password)))
+digest = SHA256(ASCII(passwordHashHex + ":" + nonceHex))
+```
+
+`digest` is 32 raw bytes. The proof carries it in two 16-byte Password headers:
+
+| Header | ID | Attribute | Information |
+|---|---:|---:|---|
+| First digest half | `0x01` | `0x04` | `digest[0..15]` |
+| Second digest half | `0x01` | `0x05` | `digest[16..31]` |
+
+The proof packet is 52 bytes: the 16-byte common header (`type=0x03`, request status `0`, header count `2`) plus
+two 18-byte headers. A response status of `0x20` indicates that authentication succeeded; a non-OK response is
+an authentication or request failure. After successful authentication, send ESC/VP21 command bytes on the same
+TCP connection.
+
+### 7.3 Evidence discrepancy: proof version byte
+
+The V2 challenge request version (`0x20`), digest formula, and proof attributes (`0x04`/`0x05`) agree between the
+current root `http-client.js` and the iProjection reverse-engineering notes. The proof request's version byte does
+not:
+
+* The decompile-derived sequence in `docs/iprojection-protocol/03-control-protocol.md` shows `0x20` for the
+  52-byte proof.
+* The current root `http-client.js` constructs that proof with version `0x10`.
+* The supplied hardware log did not complete V2 authentication: the tested projector returned `0x55`, and the
+  client fell back to V1.
+
+Therefore the correct proof version byte remains unresolved pending a successful V2 capture or hardware test.
+Implementations should not infer that the two encodings are interchangeable.
+
+The separate root `index.js` experiment starts with a V2 HELLO (`type=0x01`) and uses MD5 over
+`username:password`; `emulate.js` accepts an MD5 header without validating it. Neither establishes the
+projector's V2 digest algorithm; they conflict with the V2 CONNECT challenge (`type=0x03`) and SHA-256 formula
+implemented in `http-client.js` and described by the iProjection decompile notes. Treat those paths as
+experiments, not protocol requirements.
+
+## 8. Recommended client behavior
+
+1. Connect to TCP 3629 and attempt V2 only when desired/supported by the target.
+2. Parse the complete 16-byte response header before inspecting status or reading challenge bytes.
+3. If status is `0x41`, read the complete challenge, compute the SHA-256 response, and send both digest headers.
+4. If the V2 request returns `0x55`, close that socket before opening a fresh V1 connection. Do not reuse a
+   rejected connection for fallback.
+5. On V1 success, or V2 proof success, send ESC/VP21 ASCII commands terminated by carriage return (`0x0D`).
+6. For command replies, read through the ESC/VP21 response terminator (`0x0D 0x3A`), not just one TCP data event.
+
+## 9. Security and compatibility notes
+
+* V1 sends a plain password in a fixed-width field. Use it only on a trusted network.
+* V2's challenge-response avoids sending the password as clear text, but does not encrypt subsequent commands or
+  replace transport-layer protection.
+* Do not log passwords, password-derived hashes, or reusable authentication material in production.
+* Support is projector/firmware-dependent. `0x55` is a version negotiation result, not a password failure.
+* See [spec_esp-vp21.md](spec_esp-vp21.md) for command grammar and common command values.
+
+## 10. References
+
+* Epson ESC/VP.net reference PDF, Revision F: [../docs/1050273.pdf](../docs/1050273.pdf) ([source link](https://ia601808.us.archive.org/8/items/manualzz-id-1050273/1050273.pdf)).
+* iProjection reverse-engineering notes: [03-control-protocol.md](../docs/iprojection-protocol/03-control-protocol.md).
+* Root implementation: `http-client.js` (V1 and SHA-256 challenge-response); `index.js` and `emulate.js` contain
+  separate experimental MD5 code and are not normative.
